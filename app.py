@@ -129,6 +129,104 @@ def classify_and_pick(files, slot_rules, key_prefix, bucket_number=None):
     return assignment
 
 
+def extract_tags(files):
+    """Every distinct 'B<n>' filename tag present in this pool (e.g. Lexington
+    Labs tags each of its 5 buildings' Bucket 1/6 files this way), sorted
+    numerically as strings. Empty if the property doesn't use this convention."""
+    tags = set()
+    for f in files or []:
+        for m in re.finditer(r'(?<![a-z0-9])b0*(\d+)(?![a-z0-9])', f.name.lower()):
+            tags.add(m.group(1))
+    return sorted(tags, key=int)
+
+
+def classify_for_tag(files, slot_rules, tag):
+    """Fully automatic version of classify_and_pick (no dropdown, so it's safe
+    to call once per building in a loop) restricted to ONE building tag: for
+    each slot, prefer a file carrying that exact 'B{tag}', falling back to
+    untagged files only (never another building's tagged file) so a shared,
+    portfolio-wide file - like a combined Summary - still gets picked up.
+    Returns {slot_label: UploadedFile or None}."""
+    files = files or []
+    any_tag_re = re.compile(r'(?<![a-z0-9])b0*\d+(?![a-z0-9])')
+    tagged = [f for f in files if has_bucket_tag(f.name.lower(), tag)]
+    untagged = [f for f in files if not any_tag_re.search(f.name.lower())]
+    assignment = {}
+    used = set()
+    for slot, rule_groups in slot_rules.items():
+        pick = None
+        for pool in (tagged, untagged):
+            for f in pool:
+                if f.name in used:
+                    continue
+                fname_lower = f.name.lower()
+                for must, must_not in rule_groups:
+                    if (all(s.lower() in fname_lower for s in must)
+                            and not any(s.lower() in fname_lower for s in must_not)):
+                        pick = f
+                        break
+                if pick:
+                    break
+            if pick:
+                break
+        assignment[slot] = pick
+        if pick:
+            used.add(pick.name)
+    return assignment
+
+
+def batch_runner(all_files, slot_rules, key_prefix, bucket_num, run_fn, store_extra=None):
+    """Shown only when the file pool has more than one 'B<n>' building tag
+    (e.g. Lexington Labs' 5 buildings, each with its own Detail/Monthly pair
+    under one bucket) - the single dropdown above only ever picks one file per
+    slot, so there's no way to analyze all of them without this. Runs the
+    bucket's parser once per detected tag automatically (no manual dropdown -
+    tag + keyword matching only) and stores each building's results under its
+    own name, exactly like a normal single run.
+
+    run_fn: (picked_dict, building_name) -> results dict, e.g.
+            lambda p, bname: kardin_parser.run(p['Summary'], ...) - building_name is
+            this tag's name (for cross-bucket lookups keyed by name, e.g. bucket 6
+            needing bucket 1's results for the SAME building).
+    store_extra: optional (picked_dict) -> dict merged into the stored bucket_results entry
+                 (e.g. {'detail_pdf': p['Budget Analysis Detail']})
+    """
+    tags = extract_tags(all_files)
+    if len(tags) <= 1:
+        return
+    st.divider()
+    st.subheader("Batch mode - multiple buildings detected")
+    st.caption(f"{len(tags)} building tags found in the uploaded files: {', '.join('B' + t for t in tags)}. "
+               "The dropdowns above only select one file per slot; this runs the bucket once per tag "
+               "instead, fully automatically, and stores each as its own building.")
+    names = {}
+    cols = st.columns(len(tags))
+    for col, t in zip(cols, tags):
+        with col:
+            names[t] = st.text_input(f"Name for B{t}", value=f"B{t}", key=f'{key_prefix}_batch_name_{t}')
+
+    if st.button(f"Run Analysis for all {len(tags)} buildings", key=f'{key_prefix}_batch_run'):
+        for t in tags:
+            picked = classify_for_tag(all_files, slot_rules, t)
+            bname = names[t]
+            missing = [slot for slot, f in picked.items() if not f]
+            if missing:
+                st.warning(f"B{t} ('{bname}') skipped - couldn't auto-match: {', '.join(missing)}.")
+                continue
+            try:
+                results = run_fn(picked, bname)
+                entry = {'results': results}
+                if store_extra:
+                    entry.update(store_extra(picked))
+                st.session_state.bucket_results[(bucket_num, bname)] = entry
+                with st.expander(f"B{t} - '{bname}': {len(results['findings'])} finding(s)"):
+                    show_stats(results['stats'])
+                    show_findings(results['findings'])
+            except Exception:
+                st.error(f"B{t} ('{bname}') failed to parse:")
+                st.code(traceback.format_exc())
+
+
 st.header("Building")
 building = st.text_input("Building name (must match the tracker's tab name)", value=st.session_state.building)
 st.session_state.building = building
@@ -180,6 +278,18 @@ with tabs[0]:
     if entry:
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
+
+    b1_slot_rules = {
+        'Budget Analysis Summary': [(['summary'], [])],
+        'Budget Analysis Detail': [(['detail'], MONTHLY_TOKENS)],
+        'Monthly Budget Detail': [([t], []) for t in MONTHLY_TOKENS],
+    }
+    batch_runner(
+        all_files, b1_slot_rules, 'b1', 1,
+        run_fn=lambda p, bname: kardin_parser.run(
+            p['Budget Analysis Summary'], p['Budget Analysis Detail'], p['Monthly Budget Detail']),
+        store_extra=lambda p: {'detail_pdf': p['Budget Analysis Detail']},
+    )
 
 # ------------------------------------------------------------------- 2. Leasing & Rent
 with tabs[1]:
@@ -253,11 +363,13 @@ with tabs[3]:
     picked = classify_and_pick(all_files, {
         'Expense Detail': [(['expense detail'], [])],
         'Mgmt Fee Calc - File 1': [(['mgmt fee'], [])],
-        'Mgmt Fee Calc - File 2': [(['mgmt fee'], [])],
+        'Mgmt Fee Calc - File 2 (optional)': [(['mgmt fee'], [])],
     }, 'b4', bucket_number=4)
     expense_detail_pdf = picked['Expense Detail']
     mgmt_fee_a_pdf = picked['Mgmt Fee Calc - File 1']
-    mgmt_fee_b_pdf = picked['Mgmt Fee Calc - File 2']
+    mgmt_fee_b_pdf = picked['Mgmt Fee Calc - File 2 (optional)']
+    st.caption("Second Mgmt Fee Calc file is optional - Kardin dumps the same full-portfolio calc into "
+               "every export regardless of which building was requested, so some PMs only send one.")
 
     b1_entry = st.session_state.bucket_results.get((1, building))
     if b1_entry:
@@ -267,14 +379,15 @@ with tabs[3]:
 
     if run_button("b4_run", {
         'Expense Detail': bool(expense_detail_pdf), 'Mgmt Fee Calc - File 1': bool(mgmt_fee_a_pdf),
-        'Mgmt Fee Calc - File 2': bool(mgmt_fee_b_pdf), 'Building name': bool(building),
+        'Building name': bool(building),
     }):
         try:
             bucket1_rows = b1_entry['results']['detail_rows'] if b1_entry else None
             results = expense_parser.run(
                 expense_detail_pdf, mgmt_fee_a_pdf, mgmt_fee_b_pdf,
                 bucket1_west20_detail_rows=bucket1_rows,
-                mgmt_fee_20r_name=mgmt_fee_a_pdf.name, mgmt_fee_1r_name=mgmt_fee_b_pdf.name,
+                mgmt_fee_20r_name=mgmt_fee_a_pdf.name,
+                mgmt_fee_1r_name=mgmt_fee_b_pdf.name if mgmt_fee_b_pdf else 'Mgmt Fee Calc #2',
             )
             st.session_state.bucket_results[(4, building)] = {'results': results}
             st.success(f"Parsed - {len(results['findings'])} finding(s).")
@@ -357,6 +470,23 @@ with tabs[5]:
     if entry:
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
+
+    b6_slot_rules = {
+        '2026B v 2026F Detail': [(['detail'], MONTHLY_TOKENS)],
+        '2026F Monthly Detail': [([t], []) for t in MONTHLY_TOKENS],
+    }
+
+    def _b6_run(picked, bname):
+        b1e = st.session_state.bucket_results.get((1, bname))
+        return forecast_parser.run(
+            picked['2026B v 2026F Detail'], picked['2026F Monthly Detail'],
+            bucket1_detail_rows=b1e['results']['detail_rows'] if b1e else None,
+            bucket1_detail_pdf=b1e['detail_pdf'] if b1e else None,
+        )
+
+    st.caption("Batch mode below looks up each building's bucket-1 results (by the same name typed there) "
+               "for the reforecast drift check - run bucket 1's batch first if you want that check included.")
+    batch_runner(all_files, b6_slot_rules, 'b6', 6, run_fn=_b6_run)
 
 # --------------------------------------------------------------------------- 7. Xtra rpts
 with tabs[6]:

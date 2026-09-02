@@ -272,16 +272,22 @@ def check_west20_ties_to_bucket1_detail(line_rows, bucket1_detail_rows, toleranc
     return findings
 
 
-def run(expense_detail_pdf, mgmt_fee_20r_pdf, mgmt_fee_1r_pdf, bucket1_west20_detail_rows=None,
+def run(expense_detail_pdf, mgmt_fee_20r_pdf, mgmt_fee_1r_pdf=None, bucket1_west20_detail_rows=None,
         mgmt_fee_20r_name='Mgmt Fee Calc #1', mgmt_fee_1r_name='Mgmt Fee Calc #2'):
+    """mgmt_fee_1r_pdf is optional - some PMs only send one Mgmt Fee Calc export
+    since Kardin dumps the same full-portfolio calc into every one regardless of
+    which building was requested (see check_mgmt_fee_files_are_duplicates), so a
+    second copy is redundant. The duplicate check and its stats are skipped when
+    it's not provided; the tie-out still runs against the one file we have."""
     line_rows, totals_rows = parse_expense_detail(expense_detail_pdf)
     mgmt_fee_20r = parse_mgmt_fee_calc(mgmt_fee_20r_pdf)
-    mgmt_fee_1r = parse_mgmt_fee_calc(mgmt_fee_1r_pdf)
+    mgmt_fee_1r = parse_mgmt_fee_calc(mgmt_fee_1r_pdf) if mgmt_fee_1r_pdf is not None else []
 
     findings = []
     findings += check_gl_totals_internal_consistency(line_rows, totals_rows)
-    findings += check_mgmt_fee_files_are_duplicates(
-        mgmt_fee_20r, mgmt_fee_1r, mgmt_fee_20r_name, mgmt_fee_1r_name)
+    if mgmt_fee_1r_pdf is not None:
+        findings += check_mgmt_fee_files_are_duplicates(
+            mgmt_fee_20r, mgmt_fee_1r, mgmt_fee_20r_name, mgmt_fee_1r_name)
     findings += check_mgmt_fee_tie_out(line_rows, mgmt_fee_20r)
     if bucket1_west20_detail_rows is not None:
         findings += check_west20_ties_to_bucket1_detail(line_rows, bucket1_west20_detail_rows)
