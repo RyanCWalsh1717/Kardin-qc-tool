@@ -179,6 +179,19 @@ def get_revision(pdf_file):
     return m.group(1) if m else None
 
 
+def get_selected_cost_centers(pdf_file):
+    """['west20'] for a single-building export, ['West01', 'west20'] for a
+    combined one. This report type (unlike Expense Detail/Capex) has never
+    been observed in combined form, so parse_analysis_report/parse_monthly_
+    detail are NOT validated against it - see check_multiple_cost_centers."""
+    with pdfplumber.open(pdf_file) as pdf:
+        text = pdf.pages[0].extract_text() or ''
+    m = re.search(r'Selected Cost Centers\s*:\s*(.+)', text)
+    if not m:
+        return []
+    return [c.strip() for c in m.group(1).split(',') if c.strip()]
+
+
 def meets_materiality(dollar, pct):
     if dollar is None or pct is None:
         return False
@@ -300,6 +313,42 @@ def check_revision_mismatch(summary_file, detail_file, monthly_file):
     return findings
 
 
+def check_multiple_cost_centers(summary_file, detail_file, monthly_file):
+    """
+    parse_analysis_report/parse_monthly_detail have only ever been validated
+    against single-cost-center exports of this report type. If Kardin breaks
+    out a combined export the same way it does for Expense Detail/Capex (GL
+    code once, then "West01 (West01)"/"west20 (west20)" tag lines with no
+    repeated GL code on the numbers themselves), those rows come back with
+    gl=None - which every check in this module silently skips. That means a
+    combined-scope export could produce a clean-looking zero-finding result
+    that's actually just not checking anything. Flag it instead of guessing.
+    """
+    findings = []
+    files = {'Summary': summary_file, 'Detail': detail_file, 'Monthly Detail': monthly_file}
+    for label, f in files.items():
+        centers = get_selected_cost_centers(f)
+        if len(centers) > 1:
+            findings.append({
+                'Report Section': '1. General',
+                'GL Acct': '',
+                'Line Item': 'GENERAL',
+                'Budget Year': 'N/A',
+                'Priority': 'Must Fix',
+                'Comment': (
+                    f"{label} was exported with multiple cost centers selected ({', '.join(centers)}), "
+                    "not one building. This parser has only been validated against single-building "
+                    "exports of this report type - findings from this file may be incomplete or "
+                    "silently wrong. Re-export with a single cost center selected, or treat any "
+                    "'no findings' result from this file with suspicion until combined-format support "
+                    "is built and validated against a real sample."
+                ),
+                'Status': 'Open',
+                'Source Check': 'Multiple cost centers in single-building report',
+            })
+    return findings
+
+
 def run(summary_file, detail_file, monthly_file):
     """Parse all three files and run all bucket-1 checks. Files can be paths or
     Streamlit UploadedFile objects (each is read multiple times, so callers
@@ -310,6 +359,7 @@ def run(summary_file, detail_file, monthly_file):
     monthly_rows = parse_monthly_detail(monthly_file)
 
     findings = []
+    findings += check_multiple_cost_centers(summary_file, detail_file, monthly_file)
     findings += check_missing_explanations(detail_rows)
     findings += check_electric_tie_out(monthly_rows)
     findings += check_detail_vs_monthly_totals(detail_rows, monthly_rows)
