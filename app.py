@@ -61,6 +61,12 @@ def report_error():
     st.code(traceback.format_exc())
 
 
+# Riverside Labs' own bucket-2 file was "...Rent-Lab-Mnthly.pdf" - not
+# spelled out. Every rule that keys off "monthly" (to find/exclude a Monthly
+# Detail file) checks all of these instead of just the one literal spelling.
+MONTHLY_TOKENS = ['monthly', 'mnthly', 'mthly']
+
+
 def has_bucket_tag(fname_lower, n):
     """True if the filename carries an explicit 'B1'/'B2'/... bucket-number
     tag (as a whole token, so 'b1' doesn't match inside 'b10' etc). Some
@@ -152,8 +158,8 @@ with tabs[0]:
     st.caption("Budget Analysis Summary / Detail / Monthly Detail")
     picked = classify_and_pick(all_files, {
         'Budget Analysis Summary': [(['summary'], [])],
-        'Budget Analysis Detail': [(['detail'], ['monthly'])],
-        'Monthly Budget Detail': [(['monthly'], [])],
+        'Budget Analysis Detail': [(['detail'], MONTHLY_TOKENS)],
+        'Monthly Budget Detail': [([t], []) for t in MONTHLY_TOKENS],
     }, 'b1', bucket_number=1)
     summary_pdf = picked['Budget Analysis Summary']
     detail_pdf = picked['Budget Analysis Detail']
@@ -213,7 +219,7 @@ with tabs[2]:
     st.caption("Recovery Calc Est / Recovery Monthly / Gross Up Schedule / Fixed Factor Calcs (.xlsx)")
     picked = classify_and_pick(all_files, {
         'Recovery Calc Est': [(['calc est'], [])],
-        'Recovery Monthly': [(['recovery', 'monthly'], [])],
+        'Recovery Monthly': [(['recovery', t], []) for t in MONTHLY_TOKENS],
         'Gross Up Schedule': [(['gross up'], [])],
     }, 'b3', bucket_number=3)
     calc_est_pdf = picked['Recovery Calc Est']
@@ -321,8 +327,8 @@ with tabs[4]:
 with tabs[5]:
     st.caption("2026B v 2026F Detail / 2026F Monthly Detail. Cross-checks against bucket 1's Detail when available.")
     picked = classify_and_pick(all_files, {
-        '2026B v 2026F Detail': [(['detail'], ['monthly'])],
-        '2026F Monthly Detail': [(['monthly'], [])],
+        '2026B v 2026F Detail': [(['detail'], MONTHLY_TOKENS)],
+        '2026F Monthly Detail': [([t], []) for t in MONTHLY_TOKENS],
     }, 'b6', bucket_number=6)
     fc_detail_pdf = picked['2026B v 2026F Detail']
     fc_monthly_pdf = picked['2026F Monthly Detail']
