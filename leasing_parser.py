@@ -130,6 +130,41 @@ def parse_rent_lab_monthly(pdf_file):
     return rows
 
 
+def parse_rent_lab_monthly_multi(pdf_files):
+    """Combines one or more per-use-type monthly base-rent exports into one
+    row set. Riverside Labs exports this as a single file; Lexington Labs
+    splits it by use-type (Rent-Lab-Monthly / Rent-Office-Monthly /
+    Rent-Misc-Monthly) instead - each file's own 'Total' row only covers its
+    slice, so those are summed month-by-month into one combined total that
+    represents the whole property's gross scheduled rent (needed by
+    check_free_rent_within_gross_bound, which compares against ALL free rent,
+    not just one use-type's)."""
+    all_rows = []
+    per_file_totals = []
+    for f in pdf_files:
+        rows = parse_rent_lab_monthly(f)
+        all_rows += [r for r in rows if not r['is_total']]
+        t = next((r for r in rows if r['is_total']), None)
+        if t:
+            per_file_totals.append(t)
+    if per_file_totals:
+        months = [sum(t['months'][m] for t in per_file_totals) for m in range(12)]
+        all_rows.append({'suite': 'TOTAL', 'label': 'Total (combined across files)',
+                          'months': months, 'total': sum(months), 'is_total': True})
+    return all_rows
+
+
+def parse_rent_roll_roster_multi(pdf_files):
+    """Concatenates one or more Rent Roll exports (Lexington Labs adds a
+    supplementary 'Rent Roll-Retail' alongside the main roll) into one
+    roster. check_suite_roster_consistency dedupes by suite via sets, so an
+    overlapping/duplicate suite across files is harmless either way."""
+    rows = []
+    for f in pdf_files:
+        rows += parse_rent_roll_roster(f)
+    return rows
+
+
 # ---------------------------------------------------------- Occupancy Summary
 
 def parse_occupancy_summary(pdf_file):
@@ -448,11 +483,18 @@ def check_suite_roster_consistency(occupancy_rows, stacking_rows, rent_roll_rows
     return findings
 
 
-def run(free_rent_pdf, rent_lab_pdf, occupancy_pdf, rent_roll_pdf, stacking_plan_pdf):
+def run(free_rent_pdf, rent_lab_pdfs, occupancy_pdf, rent_roll_pdfs, stacking_plan_pdf):
+    """rent_lab_pdfs / rent_roll_pdfs: a file or a list of files - see
+    parse_rent_lab_monthly_multi / parse_rent_roll_roster_multi."""
+    if not isinstance(rent_lab_pdfs, (list, tuple)):
+        rent_lab_pdfs = [rent_lab_pdfs]
+    if not isinstance(rent_roll_pdfs, (list, tuple)):
+        rent_roll_pdfs = [rent_roll_pdfs]
+
     free_rent_rows = parse_free_rent(free_rent_pdf)
-    rent_lab_rows = parse_rent_lab_monthly(rent_lab_pdf)
+    rent_lab_rows = parse_rent_lab_monthly_multi(rent_lab_pdfs)
     occupancy_rows = parse_occupancy_summary(occupancy_pdf)
-    rent_roll_rows = parse_rent_roll_roster(rent_roll_pdf)
+    rent_roll_rows = parse_rent_roll_roster_multi(rent_roll_pdfs)
     stacking_rows = parse_stacking_plan(stacking_plan_pdf)
 
     findings = []

@@ -102,6 +102,27 @@ def classify_and_pick(files, slot_rules, key_prefix, bucket_number=None):
 
     tagged = [f for f in files if bucket_number is not None and has_bucket_tag(f.name.lower(), bucket_number)]
 
+    def matches_any_rule(fname_lower):
+        for rule_groups in slot_rules.values():
+            for must, must_not in rule_groups:
+                if all(s.lower() in fname_lower for s in must) and not any(s.lower() in fname_lower for s in must_not):
+                    return True
+        return False
+
+    # With every bucket's files dropped into one shared pool, a plain "every
+    # uploaded file" dropdown gets long and hard to scan. Default each
+    # dropdown to just the files that look relevant to THIS bucket, with an
+    # opt-out checkbox for the rare true-manual-override case.
+    relevant_names = [n for n in names if matches_any_rule(n.lower())]
+    show_all = False
+    if relevant_names and len(relevant_names) < len(names):
+        show_all = st.checkbox(
+            f"Show all {len(names)} uploaded files in these dropdowns (default: just the "
+            f"{len(relevant_names)} that look relevant to this bucket)",
+            key=f'{key_prefix}_show_all',
+        )
+    pool_names = names if (show_all or not relevant_names) else relevant_names
+
     for slot, rule_groups in slot_rules.items():
         guess = None
         for pool in (tagged, files):
@@ -118,7 +139,9 @@ def classify_and_pick(files, slot_rules, key_prefix, bucket_number=None):
                     break
             if guess:
                 break
-        options = ['(none)'] + names
+        options = ['(none)'] + pool_names
+        if guess and guess not in options:
+            options.append(guess)  # always selectable even if filtered out of the default view
         default_idx = options.index(guess) if guess in options else 0
         sel = st.selectbox(slot, options, index=default_idx, key=f'{key_prefix}_{slot}')
         if sel != '(none)':
@@ -127,6 +150,27 @@ def classify_and_pick(files, slot_rules, key_prefix, bucket_number=None):
         else:
             assignment[slot] = None
     return assignment
+
+
+def classify_multi(files, rule_groups, key, label):
+    """Multiselect version of the auto-guess, for slots where a property may
+    split one report into several files by category (e.g. Lexington Labs'
+    Base Rent by use-type: Lab/Office/Misc, or a supplementary Rent Roll -
+    Retail alongside the main roll) - a single dropdown can only ever pick
+    one file, so this pre-selects every match and lets you add/remove."""
+    files = files or []
+    names = [f.name for f in files]
+    by_name = {f.name: f for f in files}
+
+    def matches(fname_lower):
+        for must, must_not in rule_groups:
+            if all(s.lower() in fname_lower for s in must) and not any(s.lower() in fname_lower for s in must_not):
+                return True
+        return False
+
+    guesses = [n for n in names if matches(n.lower())]
+    sel = st.multiselect(label, names, default=guesses, key=key)
+    return [by_name[n] for n in sel]
 
 
 def extract_tags(files):
@@ -293,27 +337,34 @@ with tabs[0]:
 
 # ------------------------------------------------------------------- 2. Leasing & Rent
 with tabs[1]:
-    st.caption("Free Rent / Base Rent - Retail (Rent-Lab-Mnthly) / Occupancy Summary / Rent Roll / Stacking Plan")
+    st.caption("Free Rent / Base Rent (Rent-Lab/Office/Misc-Mnthly) / Occupancy Summary / Rent Roll / Stacking Plan")
     picked = classify_and_pick(all_files, {
         'Free Rent': [(['free', 'rent'], [])],
-        'Base Rent - Retail (Rent-Lab-Mnthly)': [(['rent-lab'], []), (['base rent'], [])],
         'Occupancy Summary': [(['occupancy'], [])],
-        'Rent Roll': [(['rent roll'], [])],
         'Stacking Plan': [(['stacking'], [])],
     }, 'b2', bucket_number=2)
     free_rent_pdf = picked['Free Rent']
-    rent_lab_pdf = picked['Base Rent - Retail (Rent-Lab-Mnthly)']
     occupancy_pdf = picked['Occupancy Summary']
-    rent_roll_pdf = picked['Rent Roll']
     stacking_pdf = picked['Stacking Plan']
 
+    rent_lab_pdfs = classify_multi(
+        all_files,
+        [(['rent-lab'], ['free']), (['rent-office'], ['free']), (['rent-misc'], ['free']), (['base rent'], ['free'])],
+        'b2_rent_lab_multi',
+        "Base Rent - select every use-type file that applies (Lab / Office / Misc, etc.)",
+    )
+    rent_roll_pdfs = classify_multi(
+        all_files, [(['rent roll'], [])], 'b2_rent_roll_multi',
+        "Rent Roll - select every file that applies (main + any Retail/other supplement)",
+    )
+
     if run_button("b2_run", {
-        'Free Rent': bool(free_rent_pdf), 'Base Rent - Retail': bool(rent_lab_pdf),
-        'Occupancy Summary': bool(occupancy_pdf), 'Rent Roll': bool(rent_roll_pdf),
+        'Free Rent': bool(free_rent_pdf), 'Base Rent (at least one)': bool(rent_lab_pdfs),
+        'Occupancy Summary': bool(occupancy_pdf), 'Rent Roll (at least one)': bool(rent_roll_pdfs),
         'Stacking Plan': bool(stacking_pdf), 'Building name': bool(building),
     }):
         try:
-            results = leasing_parser.run(free_rent_pdf, rent_lab_pdf, occupancy_pdf, rent_roll_pdf, stacking_pdf)
+            results = leasing_parser.run(free_rent_pdf, rent_lab_pdfs, occupancy_pdf, rent_roll_pdfs, stacking_pdf)
             st.session_state.bucket_results[(2, building)] = {'results': results}
             st.success(f"Parsed - {len(results['findings'])} finding(s).")
         except Exception:
