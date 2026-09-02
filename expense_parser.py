@@ -272,7 +272,8 @@ def check_west20_ties_to_bucket1_detail(line_rows, bucket1_detail_rows, toleranc
     return findings
 
 
-def run(expense_detail_pdf, mgmt_fee_20r_pdf, mgmt_fee_1r_pdf, bucket1_west20_detail_rows=None):
+def run(expense_detail_pdf, mgmt_fee_20r_pdf, mgmt_fee_1r_pdf, bucket1_west20_detail_rows=None,
+        mgmt_fee_20r_name='Mgmt Fee Calc #1', mgmt_fee_1r_name='Mgmt Fee Calc #2'):
     line_rows, totals_rows = parse_expense_detail(expense_detail_pdf)
     mgmt_fee_20r = parse_mgmt_fee_calc(mgmt_fee_20r_pdf)
     mgmt_fee_1r = parse_mgmt_fee_calc(mgmt_fee_1r_pdf)
@@ -280,7 +281,7 @@ def run(expense_detail_pdf, mgmt_fee_20r_pdf, mgmt_fee_1r_pdf, bucket1_west20_de
     findings = []
     findings += check_gl_totals_internal_consistency(line_rows, totals_rows)
     findings += check_mgmt_fee_files_are_duplicates(
-        mgmt_fee_20r, mgmt_fee_1r, '20 Riverside Mgmt Fee Calc', '1 Riverside Mgmt Fee Calc')
+        mgmt_fee_20r, mgmt_fee_1r, mgmt_fee_20r_name, mgmt_fee_1r_name)
     findings += check_mgmt_fee_tie_out(line_rows, mgmt_fee_20r)
     if bucket1_west20_detail_rows is not None:
         findings += check_west20_ties_to_bucket1_detail(line_rows, bucket1_west20_detail_rows)
