@@ -1,3 +1,4 @@
+import re
 import traceback
 from datetime import date
 
@@ -60,15 +61,28 @@ def report_error():
     st.code(traceback.format_exc())
 
 
-def classify_and_pick(files, slot_rules, key_prefix):
-    """
-    One drag-and-drop zone uploads everything for a bucket at once; this
-    guesses which uploaded file goes in which slot by filename keyword, then
-    renders an editable dropdown per slot (defaulted to the guess) so a
-    naming-convention mismatch on a different property never blocks you -
-    worst case you just pick manually instead of it guessing wrong silently.
+def has_bucket_tag(fname_lower, n):
+    """True if the filename carries an explicit 'B1'/'B2'/... bucket-number
+    tag (as a whole token, so 'b1' doesn't match inside 'b10' etc). Some
+    properties' files are pre-labeled this way (discovered on Lexington
+    Labs), which is a much stronger signal than keyword-guessing alone."""
+    return re.search(rf'(?<![a-z0-9])b0*{n}(?![a-z0-9])', fname_lower) is not None
 
-    files: list of UploadedFile (or None/empty)
+
+def classify_and_pick(files, slot_rules, key_prefix, bucket_number=None):
+    """
+    All files for every bucket are dropped into ONE global uploader; this
+    guesses which uploaded file goes in which slot for THIS bucket, then
+    renders an editable dropdown per slot (defaulted to the guess, but
+    listing every uploaded file) so a naming-convention mismatch never
+    blocks you - worst case you just pick manually.
+
+    Matching is two-pass when bucket_number is given: first among files
+    carrying an explicit 'B{bucket_number}' tag, then (if nothing tagged
+    matches) across the full file list by keyword alone - so this works
+    whether or not a property's files use the B-number convention.
+
+    files: list of UploadedFile (or None/empty) - the FULL shared pool.
     slot_rules: {slot_label: [(must_contain_all, must_not_contain_any), ...]}
                 rules tried in order, first match wins; substrings matched
                 case-insensitively against the filename.
@@ -80,16 +94,21 @@ def classify_and_pick(files, slot_rules, key_prefix):
     assignment = {}
     used = set()
 
+    tagged = [f for f in files if bucket_number is not None and has_bucket_tag(f.name.lower(), bucket_number)]
+
     for slot, rule_groups in slot_rules.items():
         guess = None
-        for f in files:
-            if f.name in used:
-                continue
-            fname_lower = f.name.lower()
-            for must, must_not in rule_groups:
-                if (all(s.lower() in fname_lower for s in must)
-                        and not any(s.lower() in fname_lower for s in must_not)):
-                    guess = f.name
+        for pool in (tagged, files):
+            for f in pool:
+                if f.name in used:
+                    continue
+                fname_lower = f.name.lower()
+                for must, must_not in rule_groups:
+                    if (all(s.lower() in fname_lower for s in must)
+                            and not any(s.lower() in fname_lower for s in must_not)):
+                        guess = f.name
+                        break
+                if guess:
                     break
             if guess:
                 break
@@ -110,6 +129,19 @@ st.session_state.building = building
 st.caption("e.g. \"20 Riverside\" - exactly as it appears as a sheet tab in your Comment Tracker. "
            "Re-run a bucket if you change this and want its cross-checks against other buckets to line up.")
 
+st.header("Files")
+all_files = st.file_uploader(
+    "Drop every file for this budget draft here - all buckets, both buildings if applicable, all at once. "
+    "Each tab below auto-picks its own files from this pool (using a 'B1'/'B2'/... tag in the filename if "
+    "present, otherwise by keyword) - override any guess with its dropdown.",
+    type=["pdf", "xlsx"], accept_multiple_files=True, key="all_files",
+)
+if all_files:
+    st.caption(f"{len(all_files)} file(s) uploaded.")
+    with st.expander("Show uploaded filenames"):
+        for f in all_files:
+            st.write(f.name)
+
 tabs = st.tabs([
     "1. Bgt & Fcst Summaries", "2. Leasing & Rent", "3. Recoveries", "4. Expense Back-up",
     "5. CapEx Back-up", "6. Forecast Back-up", "7. Xtra rpts", "Merge to Tracker",
@@ -117,13 +149,12 @@ tabs = st.tabs([
 
 # ------------------------------------------------------------- 1. Bgt & Fcst Summaries
 with tabs[0]:
-    st.caption("Budget Analysis Summary / Detail / Monthly Detail - drop all 3 files at once")
-    files = st.file_uploader("Upload files", type="pdf", accept_multiple_files=True, key="b1_files")
-    picked = classify_and_pick(files, {
+    st.caption("Budget Analysis Summary / Detail / Monthly Detail")
+    picked = classify_and_pick(all_files, {
         'Budget Analysis Summary': [(['summary'], [])],
         'Budget Analysis Detail': [(['detail'], ['monthly'])],
         'Monthly Budget Detail': [(['monthly'], [])],
-    }, 'b1')
+    }, 'b1', bucket_number=1)
     summary_pdf = picked['Budget Analysis Summary']
     detail_pdf = picked['Budget Analysis Detail']
     monthly_pdf = picked['Monthly Budget Detail']
@@ -146,16 +177,14 @@ with tabs[0]:
 
 # ------------------------------------------------------------------- 2. Leasing & Rent
 with tabs[1]:
-    st.caption("Free Rent / Base Rent - Retail (Rent-Lab-Mnthly) / Occupancy Summary / Rent Roll / "
-               "Stacking Plan - drop all 5 files at once")
-    files = st.file_uploader("Upload files", type="pdf", accept_multiple_files=True, key="b2_files")
-    picked = classify_and_pick(files, {
+    st.caption("Free Rent / Base Rent - Retail (Rent-Lab-Mnthly) / Occupancy Summary / Rent Roll / Stacking Plan")
+    picked = classify_and_pick(all_files, {
         'Free Rent': [(['free', 'rent'], [])],
         'Base Rent - Retail (Rent-Lab-Mnthly)': [(['rent-lab'], []), (['base rent'], [])],
         'Occupancy Summary': [(['occupancy'], [])],
         'Rent Roll': [(['rent roll'], [])],
         'Stacking Plan': [(['stacking'], [])],
-    }, 'b2')
+    }, 'b2', bucket_number=2)
     free_rent_pdf = picked['Free Rent']
     rent_lab_pdf = picked['Base Rent - Retail (Rent-Lab-Mnthly)']
     occupancy_pdf = picked['Occupancy Summary']
@@ -181,22 +210,19 @@ with tabs[1]:
 
 # --------------------------------------------------------------------------- 3. Recoveries
 with tabs[2]:
-    st.caption("Recovery Calc Est / Recovery Monthly / Gross Up Schedule / Fixed Factor Calcs (.xlsx) - "
-               "drop all 4 files at once")
-    pdfs = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True, key="b3_pdfs")
-    xlsxs = st.file_uploader("Upload Fixed Factor Calcs (.xlsx)", type="xlsx", accept_multiple_files=True,
-                              key="b3_xlsx")
-    picked = classify_and_pick(pdfs, {
+    st.caption("Recovery Calc Est / Recovery Monthly / Gross Up Schedule / Fixed Factor Calcs (.xlsx)")
+    picked = classify_and_pick(all_files, {
         'Recovery Calc Est': [(['calc est'], [])],
         'Recovery Monthly': [(['recovery', 'monthly'], [])],
         'Gross Up Schedule': [(['gross up'], [])],
-    }, 'b3')
+    }, 'b3', bucket_number=3)
     calc_est_pdf = picked['Recovery Calc Est']
     recovery_monthly_pdf = picked['Recovery Monthly']
     gross_up_pdf = picked['Gross Up Schedule']
-    fixed_factor_xlsx = xlsxs[0] if xlsxs else None
-    if xlsxs and len(xlsxs) > 1:
-        st.warning(f"{len(xlsxs)} .xlsx files uploaded - using '{fixed_factor_xlsx.name}'.")
+
+    xlsx_files = [f for f in (all_files or []) if f.name.lower().endswith('.xlsx')]
+    picked_xlsx = classify_and_pick(xlsx_files, {'Fixed Factor Calcs (.xlsx)': [([], [])]}, 'b3x', bucket_number=3)
+    fixed_factor_xlsx = picked_xlsx['Fixed Factor Calcs (.xlsx)']
 
     if run_button("b3_run", {
         'Recovery Calc Est': bool(calc_est_pdf), 'Recovery Monthly': bool(recovery_monthly_pdf),
@@ -217,14 +243,12 @@ with tabs[2]:
 
 # ----------------------------------------------------------------------- 4. Expense Back-up
 with tabs[3]:
-    st.caption("Expense Detail / Mgmt Fee Calc x2 - drop all 3 files at once. "
-               "Cross-checks against bucket 1's Detail when available.")
-    files = st.file_uploader("Upload files", type="pdf", accept_multiple_files=True, key="b4_files")
-    picked = classify_and_pick(files, {
+    st.caption("Expense Detail / Mgmt Fee Calc x2. Cross-checks against bucket 1's Detail when available.")
+    picked = classify_and_pick(all_files, {
         'Expense Detail': [(['expense detail'], [])],
         'Mgmt Fee Calc - File 1': [(['mgmt fee'], [])],
         'Mgmt Fee Calc - File 2': [(['mgmt fee'], [])],
-    }, 'b4')
+    }, 'b4', bucket_number=4)
     expense_detail_pdf = picked['Expense Detail']
     mgmt_fee_a_pdf = picked['Mgmt Fee Calc - File 1']
     mgmt_fee_b_pdf = picked['Mgmt Fee Calc - File 2']
@@ -258,13 +282,12 @@ with tabs[3]:
 
 # ------------------------------------------------------------------------ 5. CapEx Back-up
 with tabs[4]:
-    st.caption("Capex / TIs / LCs - drop all 3 files at once. Cross-checks against bucket 1's Detail when available.")
-    files = st.file_uploader("Upload files", type="pdf", accept_multiple_files=True, key="b5_files")
-    picked = classify_and_pick(files, {
+    st.caption("Capex / TIs / LCs. Cross-checks against bucket 1's Detail when available.")
+    picked = classify_and_pick(all_files, {
         'Capex': [(['capex'], [])],
         'TIs': [(['tis'], []), (['tenant improvement'], [])],
         'LCs': [(['lcs'], []), (['leasing commission'], [])],
-    }, 'b5')
+    }, 'b5', bucket_number=5)
     capex_pdf = picked['Capex']
     tis_pdf = picked['TIs']
     lcs_pdf = picked['LCs']
@@ -296,13 +319,11 @@ with tabs[4]:
 
 # -------------------------------------------------------------------- 6. Forecast Back-up
 with tabs[5]:
-    st.caption("2026B v 2026F Detail / 2026F Monthly Detail - drop both files at once. "
-               "Cross-checks against bucket 1's Detail when available.")
-    files = st.file_uploader("Upload files", type="pdf", accept_multiple_files=True, key="b6_files")
-    picked = classify_and_pick(files, {
+    st.caption("2026B v 2026F Detail / 2026F Monthly Detail. Cross-checks against bucket 1's Detail when available.")
+    picked = classify_and_pick(all_files, {
         '2026B v 2026F Detail': [(['detail'], ['monthly'])],
         '2026F Monthly Detail': [(['monthly'], [])],
-    }, 'b6')
+    }, 'b6', bucket_number=6)
     fc_detail_pdf = picked['2026B v 2026F Detail']
     fc_monthly_pdf = picked['2026F Monthly Detail']
 
@@ -333,8 +354,11 @@ with tabs[5]:
 
 # --------------------------------------------------------------------------- 7. Xtra rpts
 with tabs[6]:
-    st.caption("Lease Expiration Schedule - cross-checks against bucket 2's Occupancy Summary when available")
-    lease_exp_pdf = st.file_uploader("Lease Expiration Schedule", type="pdf", key="b7_leaseexp")
+    st.caption("Lease Expiration Schedule. Cross-checks against bucket 2's Occupancy Summary when available.")
+    picked = classify_and_pick(all_files, {
+        'Lease Expiration Schedule': [(['lease expiration'], []), (['lease', 'exp'], [])],
+    }, 'b7', bucket_number=7)
+    lease_exp_pdf = picked['Lease Expiration Schedule']
 
     b2_entry = st.session_state.bucket_results.get((2, building))
     if b2_entry:
