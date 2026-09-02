@@ -29,7 +29,11 @@ import re
 from kardin_parser import MONEY_RE, PCT_RE, is_boilerplate, to_money, to_pct
 
 DATE_RE = re.compile(r'^\d{1,2}/\d{1,2}/\d{4}$')
-SUITE_RE = re.compile(r'^[Ww]est\d+-\d+$')  # must have BOTH a building number and a suite number
+# Building-code shape varies by property: Riverside Labs uses "west01" (no
+# internal hyphen), Lexington Labs uses "lexlab-1" (hyphenated) - both are
+# "letters[-]digits", so match that generally rather than hardcoding "west".
+SUITE_RE = re.compile(r'^[A-Za-z][A-Za-z-]*\d+-\d+$')  # exact: the whole token IS a suite code
+SUITE_PREFIX_RE = re.compile(r'^([A-Za-z][A-Za-z-]*\d+-\d+)(.*)$')  # suite code + any glued-on leftover text
 STATUSES = ('Unknown', 'New', 'Contract', 'Renew', 'Expansion')
 
 
@@ -179,34 +183,42 @@ def parse_occupancy_summary(pdf_file):
             status = stripped
             continue
         toks = line.split()
-        suite_idx = next((i for i, t in enumerate(toks[:3]) if SUITE_RE.match(t)), None)
+        suite_idx = next((i for i, t in enumerate(toks[:3]) if SUITE_PREFIX_RE.match(t)), None)
         if suite_idx is None:
             continue
-        date_positions = [i for i, t in enumerate(toks) if DATE_RE.match(t)]
+        m = SUITE_PREFIX_RE.match(toks[suite_idx])
+        suite_code, leftover = m.group(1), m.group(2)
+        # Some exports (Lexington Labs) glue the suite code directly onto the
+        # start of the tenant name with no space, e.g. "lexlab-1-0100Thermo
+        # Expansion" - splice the suite code back out so it doesn't pollute
+        # the label, and shift all downstream token positions accordingly.
+        clean_toks = toks[:suite_idx] + ([leftover] if leftover else []) + toks[suite_idx + 1:]
+
+        date_positions = [i for i, t in enumerate(clean_toks) if DATE_RE.match(t)]
         consecutive_dates = None
         for i in date_positions:
-            if i + 1 < len(toks) and DATE_RE.match(toks[i + 1]):
+            if i + 1 < len(clean_toks) and DATE_RE.match(clean_toks[i + 1]):
                 consecutive_dates = i
                 break
         if consecutive_dates is not None:
             i = consecutive_dates
-            label = ' '.join(toks[:i]).strip()
-            comm, exp = toks[i], toks[i + 1]
-            rest = toks[i + 2:]
+            label = ' '.join(clean_toks[:i]).strip()
+            comm, exp = clean_toks[i], clean_toks[i + 1]
+            rest = clean_toks[i + 2:]
             if len(rest) != 14 or not all(MONEY_RE.match(v) for v in rest):
                 continue
             rsf = to_money(rest[0])
             months = [to_money(v) for v in rest[1:13]]
             average = to_money(rest[13])
-            rows.append({'status': status, 'suite': toks[suite_idx], 'label': label,
+            rows.append({'status': status, 'suite': suite_code, 'label': label,
                          'comm': comm, 'exp': exp, 'rsf': rsf,
                          'months': months, 'average': average})
         else:
             # Unknown suites: "Retail west01-0100 Vacant Space 14,600" - label + single RSF
-            if MONEY_RE.match(toks[-1]) and len(toks) - suite_idx <= 5:
-                label = ' '.join(toks[:-1]).strip()
-                rows.append({'status': status, 'suite': toks[suite_idx], 'label': label,
-                             'comm': None, 'exp': None, 'rsf': to_money(toks[-1]),
+            if MONEY_RE.match(clean_toks[-1]) and len(clean_toks) - suite_idx <= 5:
+                label = ' '.join(clean_toks[:-1]).strip()
+                rows.append({'status': status, 'suite': suite_code, 'label': label,
+                             'comm': None, 'exp': None, 'rsf': to_money(clean_toks[-1]),
                              'months': None, 'average': None})
     return rows
 
@@ -214,7 +226,7 @@ def parse_occupancy_summary(pdf_file):
 # --------------------------------------------------------------- Rent Roll
 
 RENT_ROLL_ROW_RE = re.compile(
-    r'^(?P<status>' + '|'.join(STATUSES) + r')\s+R(?P<prefix>[Ww]est\d+)-\s+(?P<rest>.*)$'
+    r'^(?P<status>' + '|'.join(STATUSES) + r')\s+R(?P<prefix>[A-Za-z][A-Za-z-]*\d+)-\s+(?P<rest>.*)$'
 )
 
 
