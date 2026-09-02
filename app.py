@@ -67,6 +67,39 @@ def report_error():
 # Detail file) checks all of these instead of just the one literal spelling.
 MONTHLY_TOKENS = ['monthly', 'mnthly', 'mthly']
 
+# Buckets 2/3/4/5/7 don't always get per-building files the way Bucket 1/6
+# do at Lexington Labs (B<n> tags) - some PMs export these portfolio-wide,
+# covering every building in one file (e.g. one combined Recovery Calc Est
+# instead of five). Forcing a single specific "Building name" to run one of
+# those doesn't fit, so this sentinel lets a bucket be marked as applying to
+# every building at once instead of picking one.
+ALL_BUILDINGS = '(All Buildings)'
+
+
+def lookup_bucket(n, building):
+    """Cross-bucket lookup: prefer this specific building's results, fall
+    back to an ALL_BUILDINGS run of that bucket if this building doesn't have
+    its own (e.g. Bucket 2 was run portfolio-wide but Bucket 7 is being run
+    for one specific building)."""
+    return (st.session_state.bucket_results.get((n, building))
+            or st.session_state.bucket_results.get((n, ALL_BUILDINGS)))
+
+
+def building_selector(prefix, building):
+    """Renders the 'this bucket covers all buildings' checkbox for a
+    single-file bucket. Returns (effective_building_key, requirement_met) -
+    use effective_building_key wherever the bucket's OWN results get stored/
+    read; keep using the plain `building` value for any cross-bucket lookup
+    into a per-building bucket like 1 or 2, since those still need one
+    specific building's data even when THIS bucket is portfolio-wide."""
+    all_buildings = st.checkbox(
+        "This bucket's files cover ALL buildings (one portfolio-wide export, not building-specific)",
+        key=f'{prefix}_all_buildings',
+    )
+    if all_buildings:
+        return ALL_BUILDINGS, True
+    return building, bool(building)
+
 
 def has_bucket_tag(fname_lower, n):
     """True if the filename carries an explicit 'B1'/'B2'/... bucket-number
@@ -427,19 +460,21 @@ with tabs[1]:
         "Rent Roll - select every file that applies (main + any Retail/other supplement)",
     )
 
+    eff_building, building_ok = building_selector('b2', building)
+
     if run_button("b2_run", {
         'Free Rent': bool(free_rent_pdf), 'Base Rent (at least one)': bool(rent_lab_pdfs),
         'Occupancy Summary': bool(occupancy_pdf), 'Rent Roll (at least one)': bool(rent_roll_pdfs),
-        'Stacking Plan': bool(stacking_pdf), 'Building name': bool(building),
+        'Stacking Plan': bool(stacking_pdf), 'Building name': building_ok,
     }):
         try:
             results = leasing_parser.run(free_rent_pdf, rent_lab_pdfs, occupancy_pdf, rent_roll_pdfs, stacking_pdf)
-            st.session_state.bucket_results[(2, building)] = {'results': results}
+            st.session_state.bucket_results[(2, eff_building)] = {'results': results}
             st.success(f"Parsed - {len(results['findings'])} finding(s).")
         except Exception:
             report_error()
 
-    entry = st.session_state.bucket_results.get((2, building))
+    entry = st.session_state.bucket_results.get((2, eff_building))
     if entry:
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
@@ -460,19 +495,21 @@ with tabs[2]:
     picked_xlsx = classify_and_pick(xlsx_files, {'Fixed Factor Calcs (.xlsx)': [([], [])]}, 'b3x', bucket_number=3)
     fixed_factor_xlsx = picked_xlsx['Fixed Factor Calcs (.xlsx)']
 
+    eff_building, building_ok = building_selector('b3', building)
+
     if run_button("b3_run", {
         'Recovery Calc Est': bool(calc_est_pdf), 'Recovery Monthly': bool(recovery_monthly_pdf),
         'Gross Up Schedule': bool(gross_up_pdf), 'Fixed Factor Calcs (.xlsx)': bool(fixed_factor_xlsx),
-        'Building name': bool(building),
+        'Building name': building_ok,
     }):
         try:
             results = recoveries_parser.run(calc_est_pdf, recovery_monthly_pdf, gross_up_pdf, fixed_factor_xlsx)
-            st.session_state.bucket_results[(3, building)] = {'results': results}
+            st.session_state.bucket_results[(3, eff_building)] = {'results': results}
             st.success(f"Parsed - {len(results['findings'])} finding(s).")
         except Exception:
             report_error()
 
-    entry = st.session_state.bucket_results.get((3, building))
+    entry = st.session_state.bucket_results.get((3, eff_building))
     if entry:
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
@@ -491,15 +528,17 @@ with tabs[3]:
     st.caption("Second Mgmt Fee Calc file is optional - Kardin dumps the same full-portfolio calc into "
                "every export regardless of which building was requested, so some PMs only send one.")
 
-    b1_entry = st.session_state.bucket_results.get((1, building))
+    b1_entry = lookup_bucket(1, building)
     if b1_entry:
         st.caption("✓ Bucket 1 data found for this building - GL tie-out will run.")
     else:
         st.caption("Bucket 1 not yet run for this building - GL tie-out will be skipped.")
 
+    eff_building, building_ok = building_selector('b4', building)
+
     if run_button("b4_run", {
         'Expense Detail': bool(expense_detail_pdf), 'Mgmt Fee Calc - File 1': bool(mgmt_fee_a_pdf),
-        'Building name': bool(building),
+        'Building name': building_ok,
     }):
         try:
             bucket1_rows = b1_entry['results']['detail_rows'] if b1_entry else None
@@ -509,12 +548,12 @@ with tabs[3]:
                 mgmt_fee_20r_name=mgmt_fee_a_pdf.name,
                 mgmt_fee_1r_name=mgmt_fee_b_pdf.name if mgmt_fee_b_pdf else 'Mgmt Fee Calc #2',
             )
-            st.session_state.bucket_results[(4, building)] = {'results': results}
+            st.session_state.bucket_results[(4, eff_building)] = {'results': results}
             st.success(f"Parsed - {len(results['findings'])} finding(s).")
         except Exception:
             report_error()
 
-    entry = st.session_state.bucket_results.get((4, building))
+    entry = st.session_state.bucket_results.get((4, eff_building))
     if entry:
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
@@ -531,14 +570,16 @@ with tabs[4]:
     tis_pdf = picked['TIs']
     lcs_pdf = picked['LCs']
 
-    b1_entry = st.session_state.bucket_results.get((1, building))
+    b1_entry = lookup_bucket(1, building)
     if b1_entry:
         st.caption("✓ Bucket 1 data found for this building - GL tie-out will run.")
     else:
         st.caption("Bucket 1 not yet run for this building - GL tie-out will be skipped.")
 
+    eff_building, building_ok = building_selector('b5', building)
+
     if run_button("b5_run", {
-        'Capex': bool(capex_pdf), 'TIs': bool(tis_pdf), 'LCs': bool(lcs_pdf), 'Building name': bool(building),
+        'Capex': bool(capex_pdf), 'TIs': bool(tis_pdf), 'LCs': bool(lcs_pdf), 'Building name': building_ok,
     }):
         try:
             capex_line_rows, capex_totals_rows = expense_parser.parse_expense_detail(capex_pdf)
@@ -546,12 +587,12 @@ with tabs[4]:
             results = capex_parser.run(tis_pdf, lcs_pdf, capex_line_rows=capex_line_rows,
                                        capex_totals_rows=capex_totals_rows,
                                        bucket1_west20_detail_rows=bucket1_rows)
-            st.session_state.bucket_results[(5, building)] = {'results': results}
+            st.session_state.bucket_results[(5, eff_building)] = {'results': results}
             st.success(f"Parsed - {len(results['findings'])} finding(s).")
         except Exception:
             report_error()
 
-    entry = st.session_state.bucket_results.get((5, building))
+    entry = st.session_state.bucket_results.get((5, eff_building))
     if entry:
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
@@ -566,7 +607,7 @@ with tabs[5]:
     fc_detail_pdf = picked['2026B v 2026F Detail']
     fc_monthly_pdf = picked['2026F Monthly Detail']
 
-    b1_entry = st.session_state.bucket_results.get((1, building))
+    b1_entry = lookup_bucket(1, building)
     if b1_entry:
         st.caption("✓ Bucket 1 data found for this building - reforecast drift check will run.")
     else:
@@ -616,22 +657,24 @@ with tabs[6]:
     }, 'b7', bucket_number=7)
     lease_exp_pdf = picked['Lease Expiration Schedule']
 
-    b2_entry = st.session_state.bucket_results.get((2, building))
+    b2_entry = lookup_bucket(2, building)
     if b2_entry:
         st.caption("✓ Bucket 2 data found for this building - Occupancy Summary tie-out will run.")
     else:
         st.caption("Bucket 2 not yet run for this building - Occupancy Summary tie-out will be skipped.")
 
-    if run_button("b7_run", {'Lease Expiration Schedule': bool(lease_exp_pdf), 'Building name': bool(building)}):
+    eff_building, building_ok = building_selector('b7', building)
+
+    if run_button("b7_run", {'Lease Expiration Schedule': bool(lease_exp_pdf), 'Building name': building_ok}):
         try:
             occupancy_rows = b2_entry['results']['occupancy_rows'] if b2_entry else None
             results = xtra_parser.run(lease_exp_pdf, occupancy_rows=occupancy_rows)
-            st.session_state.bucket_results[(7, building)] = {'results': results}
+            st.session_state.bucket_results[(7, eff_building)] = {'results': results}
             st.success(f"Parsed - {len(results['findings'])} finding(s).")
         except Exception:
             report_error()
 
-    entry = st.session_state.bucket_results.get((7, building))
+    entry = st.session_state.bucket_results.get((7, eff_building))
     if entry:
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
@@ -647,9 +690,16 @@ with tabs[7]:
     }
     present = []
     for n in range(1, 8):
-        e = st.session_state.bucket_results.get((n, building))
-        if e:
-            combined_findings += e['results']['findings']
+        # Include both this specific building's own run AND any portfolio-
+        # wide "(All Buildings)" run of the same bucket (see building_selector) -
+        # a bucket can be one, the other, or (rarely) both.
+        e_specific = st.session_state.bucket_results.get((n, building))
+        e_all = st.session_state.bucket_results.get((n, ALL_BUILDINGS))
+        if e_specific:
+            combined_findings += e_specific['results']['findings']
+        if e_all:
+            combined_findings += e_all['results']['findings']
+        if e_specific or e_all:
             present.append(bucket_labels[n])
     missing = [v for k, v in bucket_labels.items() if bucket_labels[k] not in present]
 
