@@ -49,12 +49,15 @@ def show_findings(findings):
 
 
 def run_button(key, requirements):
-    """requirements: {label: is_satisfied_bool}. Shows exactly what's missing
-    instead of just leaving the button greyed out with no explanation."""
+    """requirements: {label: is_satisfied_bool}. Missing files no longer
+    block the run - they flag it instead (each bucket's run() adds its own
+    "Missing file" finding for whatever wasn't provided) so partial uploads
+    still produce whatever findings ARE possible from what's there."""
     missing = [label for label, ok in requirements.items() if not ok]
     if missing:
-        st.caption(f"⚠️ Run Analysis is disabled - still need: {', '.join(missing)}.")
-    return st.button("Run Analysis", type="primary", key=key, disabled=bool(missing))
+        st.caption(f"⚠️ Missing: {', '.join(missing)}. Findings that depend on these will be "
+                   "flagged, not skip the whole run - click Run Analysis to see what's available now.")
+    return st.button("Run Analysis", type="primary", key=key)
 
 
 def report_error():
@@ -293,8 +296,8 @@ def batch_runner(all_files, slot_rules, key_prefix, bucket_num, run_fn, store_ex
             bname = names[t]
             missing = [slot for slot, f in picked.items() if not f]
             if missing:
-                st.warning(f"B{t} ('{bname}') skipped - couldn't auto-match: {', '.join(missing)}.")
-                continue
+                st.warning(f"B{t} ('{bname}') couldn't auto-match: {', '.join(missing)} - "
+                           "running anyway with what's available; each missing file is flagged below.")
             try:
                 results = run_fn(picked, bname, t)
                 entry = {'results': results}
@@ -545,7 +548,7 @@ with tabs[3]:
             results = expense_parser.run(
                 expense_detail_pdf, mgmt_fee_a_pdf, mgmt_fee_b_pdf,
                 bucket1_west20_detail_rows=bucket1_rows,
-                mgmt_fee_20r_name=mgmt_fee_a_pdf.name,
+                mgmt_fee_20r_name=mgmt_fee_a_pdf.name if mgmt_fee_a_pdf else 'Mgmt Fee Calc #1',
                 mgmt_fee_1r_name=mgmt_fee_b_pdf.name if mgmt_fee_b_pdf else 'Mgmt Fee Calc #2',
             )
             st.session_state.bucket_results[(4, eff_building)] = {'results': results}
@@ -586,7 +589,8 @@ with tabs[4]:
             bucket1_rows = b1_entry['results']['detail_rows'] if b1_entry else None
             results = capex_parser.run(tis_pdf, lcs_pdf, capex_line_rows=capex_line_rows,
                                        capex_totals_rows=capex_totals_rows,
-                                       bucket1_west20_detail_rows=bucket1_rows)
+                                       bucket1_west20_detail_rows=bucket1_rows,
+                                       capex_pdf_missing=(capex_pdf is None))
             st.session_state.bucket_results[(5, eff_building)] = {'results': results}
             st.success(f"Parsed - {len(results['findings'])} finding(s).")
         except Exception:

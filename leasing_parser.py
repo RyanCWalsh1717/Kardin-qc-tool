@@ -38,6 +38,8 @@ STATUSES = ('Unknown', 'New', 'Contract', 'Renew', 'Expansion')
 
 
 def extract_pages_text(pdf_file):
+    if pdf_file is None:
+        return []
     import pdfplumber
     pages = []
     with pdfplumber.open(pdf_file) as pdf:
@@ -509,7 +511,18 @@ def run(free_rent_pdf, rent_lab_pdfs, occupancy_pdf, rent_roll_pdfs, stacking_pl
     rent_roll_rows = parse_rent_roll_roster_multi(rent_roll_pdfs)
     stacking_rows = parse_stacking_plan(stacking_plan_pdf)
 
+    from kardin_parser import missing_file_finding
     findings = []
+    if free_rent_pdf is None:
+        findings.append(missing_file_finding('Free Rent'))
+    if not rent_lab_pdfs:
+        findings.append(missing_file_finding('Base Rent'))
+    if occupancy_pdf is None:
+        findings.append(missing_file_finding('Occupancy Summary'))
+    if not rent_roll_pdfs:
+        findings.append(missing_file_finding('Rent Roll'))
+    if stacking_plan_pdf is None:
+        findings.append(missing_file_finding('Stacking Plan'))
     findings += check_unmodeled_vacant_suites(occupancy_rows)
     findings += check_stacking_vs_occupancy_consistency(occupancy_rows, stacking_rows)
     findings += check_free_rent_internal_consistency(free_rent_rows)

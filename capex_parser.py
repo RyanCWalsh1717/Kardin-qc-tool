@@ -26,11 +26,17 @@ import re
 from kardin_parser import MONEY_RE, is_boilerplate, to_money
 
 DATE_RE = re.compile(r'^\d{1,2}/\d{1,2}/\d{4}$')
-SUITE_RE = re.compile(r'^[Ww]est\d+-\d+$')
+# Building-code shape varies by property (see leasing_parser.SUITE_RE), and
+# some exports (Lexington Labs) glue the suite code directly onto the start
+# of the tenant name with no space, e.g. "lexlab-1-0200Vacant Space" - this
+# matches just the leading suite-code portion of a token like that.
+SUITE_PREFIX_RE = re.compile(r'^([A-Za-z][A-Za-z-]*\d+-\d+)')
 GLUED_RATE_RE = re.compile(r'(\d\.\d{2})(?=\d)')  # Kardin sometimes drops the space, e.g. "55.001,295,140"
 
 
 def all_lines(pdf_file):
+    if pdf_file is None:
+        return []
     import pdfplumber
     lines = []
     with pdfplumber.open(pdf_file) as pdf:
@@ -51,12 +57,13 @@ def parse_ti_lc_report(pdf_file):
         toks = line.split()
         if not toks:
             continue
-        if SUITE_RE.match(toks[0]):
+        m_suite = SUITE_PREFIX_RE.match(toks[0])
+        if m_suite:
             if current:
                 suites.append(current)
             money_toks = [t for t in toks if MONEY_RE.match(t)]
             suite_2027_total = to_money(money_toks[-1]) if money_toks else None
-            current = {'suite': toks[0], 'suite_2027_total': suite_2027_total, 'installments': []}
+            current = {'suite': m_suite.group(1), 'suite_2027_total': suite_2027_total, 'installments': []}
             continue
         if len(toks) == 3 and DATE_RE.match(toks[0]) and toks[1].endswith('%') and MONEY_RE.match(toks[2]):
             if current is not None:
@@ -115,11 +122,19 @@ def note_prior_year_installments(suites, report_label):
     return findings
 
 
-def run(tis_pdf, lcs_pdf, capex_line_rows=None, capex_totals_rows=None, bucket1_west20_detail_rows=None):
+def run(tis_pdf, lcs_pdf, capex_line_rows=None, capex_totals_rows=None, bucket1_west20_detail_rows=None,
+        capex_pdf_missing=False):
     ti_suites = parse_ti_lc_report(tis_pdf)
     lc_suites = parse_ti_lc_report(lcs_pdf)
 
+    from kardin_parser import missing_file_finding
     findings = []
+    if tis_pdf is None:
+        findings.append(missing_file_finding('TIs'))
+    if lcs_pdf is None:
+        findings.append(missing_file_finding('LCs'))
+    if capex_pdf_missing:
+        findings.append(missing_file_finding('Capex'))
     findings += check_ti_lc_schedule_consistency(ti_suites, 'Tenant Improvements')
     findings += check_ti_lc_schedule_consistency(lc_suites, 'Leasing Commissions')
     findings += note_prior_year_installments(ti_suites, 'Tenant Improvements')

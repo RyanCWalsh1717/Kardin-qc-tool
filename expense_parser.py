@@ -28,6 +28,8 @@ COST_CENTER_TAG_RE = re.compile(r'^(\S+)\s*\(\1\)$', re.IGNORECASE)
 
 
 def all_lines(pdf_file):
+    if pdf_file is None:
+        return []
     import pdfplumber
     lines = []
     with pdfplumber.open(pdf_file) as pdf:
@@ -283,7 +285,12 @@ def run(expense_detail_pdf, mgmt_fee_20r_pdf, mgmt_fee_1r_pdf=None, bucket1_west
     mgmt_fee_20r = parse_mgmt_fee_calc(mgmt_fee_20r_pdf)
     mgmt_fee_1r = parse_mgmt_fee_calc(mgmt_fee_1r_pdf) if mgmt_fee_1r_pdf is not None else []
 
+    from kardin_parser import missing_file_finding
     findings = []
+    if expense_detail_pdf is None:
+        findings.append(missing_file_finding('Expense Detail'))
+    if mgmt_fee_20r_pdf is None:
+        findings.append(missing_file_finding('Mgmt Fee Calc - File 1'))
     findings += check_gl_totals_internal_consistency(line_rows, totals_rows)
     if mgmt_fee_1r_pdf is not None:
         findings += check_mgmt_fee_files_are_duplicates(

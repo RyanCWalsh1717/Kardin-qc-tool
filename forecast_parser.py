@@ -41,6 +41,8 @@ def _is_boilerplate(line):
 
 
 def all_lines(pdf_file):
+    if pdf_file is None:
+        return []
     import pdfplumber
     lines = []
     with pdfplumber.open(pdf_file) as pdf:
@@ -186,7 +188,12 @@ def run(detail_pdf, monthly_pdf, bucket1_detail_rows=None, bucket1_detail_pdf=No
     detail_rows = parse_2way_detail(detail_pdf)
     monthly_rows = parse_monthly_detail(monthly_pdf)
 
+    from kardin_parser import missing_file_finding
     findings = []
+    if detail_pdf is None:
+        findings.append(missing_file_finding('2026B v 2026F Detail'))
+    if monthly_pdf is None:
+        findings.append(missing_file_finding('2026F Monthly Detail'))
     findings += check_missing_explanations(detail_rows)
     findings += check_electric_tie_out(monthly_rows)
     findings += check_detail_vs_monthly_totals(detail_rows, monthly_rows)

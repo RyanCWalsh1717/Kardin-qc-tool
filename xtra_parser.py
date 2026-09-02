@@ -23,10 +23,13 @@ import re
 from kardin_parser import MONEY_RE, PCT_RE, is_boilerplate, to_money, to_pct
 
 DATE_RE = re.compile(r'^\d{1,2}/\d{1,2}/\d{4}$')
-SUITE_RE = re.compile(r'^[Ww]est\d+-\d+$')
+# Building-code shape varies by property - see leasing_parser.SUITE_RE.
+SUITE_RE = re.compile(r'^[A-Za-z][A-Za-z-]*\d+-\d+$')
 
 
 def all_lines(pdf_file):
+    if pdf_file is None:
+        return []
     import pdfplumber
     lines = []
     with pdfplumber.open(pdf_file) as pdf:
@@ -189,7 +192,10 @@ def check_cross_tie_vs_occupancy(schedule, occupancy_rows):
 def run(lease_expiration_pdf, occupancy_rows=None):
     schedule = parse_lease_expiration_schedule(lease_expiration_pdf)
 
+    from kardin_parser import missing_file_finding
     findings = []
+    if lease_expiration_pdf is None:
+        findings.append(missing_file_finding('Lease Expiration Schedule'))
     findings += check_percent_consistency(schedule)
     if occupancy_rows is not None:
         findings += check_cross_tie_vs_occupancy(schedule, occupancy_rows)

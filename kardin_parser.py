@@ -70,12 +70,31 @@ def is_pct_or_na(tok):
 
 
 def extract_pages_text(pdf_file):
+    if pdf_file is None:
+        return []
     pages = []
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             text = page.extract_text() or ''
             pages.append(text.split('\n'))
     return pages
+
+
+def missing_file_finding(label):
+    """Standard 'file not provided' finding. app.py lets Run Analysis proceed
+    even when a required slot is empty (flag it, don't block the whole run) -
+    every bucket's run() calls this for whichever file is missing so that gap
+    stays visible instead of just looking like a clean, complete result."""
+    return {
+        'Report Section': '1. General', 'GL Acct': '', 'Line Item': 'GENERAL',
+        'Budget Year': 'N/A', 'Priority': 'Must Fix',
+        'Comment': (
+            f"{label} was not provided for this run. Any check that depends on it was skipped "
+            "entirely, not just any finding it would have produced - treat this result as "
+            "incomplete until it's uploaded and the bucket is re-run."
+        ),
+        'Status': 'Open', 'Source Check': 'Missing file',
+    }
 
 
 def parse_analysis_report(pdf_file):
@@ -173,6 +192,8 @@ def parse_monthly_detail(pdf_file):
 
 
 def get_revision(pdf_file):
+    if pdf_file is None:
+        return None
     with pdfplumber.open(pdf_file) as pdf:
         text = pdf.pages[0].extract_text() or ''
     m = re.search(r'Revision:\s*(\d+)', text)
@@ -184,6 +205,8 @@ def get_selected_cost_centers(pdf_file):
     combined one. This report type (unlike Expense Detail/Capex) has never
     been observed in combined form, so parse_analysis_report/parse_monthly_
     detail are NOT validated against it - see check_multiple_cost_centers."""
+    if pdf_file is None:
+        return []
     with pdfplumber.open(pdf_file) as pdf:
         text = pdf.pages[0].extract_text() or ''
     m = re.search(r'Selected Cost Centers\s*:\s*(.+)', text)
@@ -325,6 +348,9 @@ def check_revision_mismatch(summary_file, detail_file, monthly_file):
         'Detail': get_revision(detail_file),
         'Monthly Detail': get_revision(monthly_file),
     }
+    # A missing file's own "missing file" finding already covers it - don't
+    # also report every present file as "mismatched" against None here.
+    revs = {k: v for k, v in revs.items() if v is not None}
     findings = []
     if len(set(revs.values())) > 1:
         findings.append({
@@ -413,6 +439,12 @@ def run(summary_file, detail_file, monthly_file, expected_cost_center=None):
     monthly_rows = parse_monthly_detail(monthly_file)
 
     findings = []
+    if summary_file is None:
+        findings.append(missing_file_finding('Budget Analysis Summary'))
+    if detail_file is None:
+        findings.append(missing_file_finding('Budget Analysis Detail'))
+    if monthly_file is None:
+        findings.append(missing_file_finding('Monthly Budget Detail'))
     findings += check_multiple_cost_centers(summary_file, detail_file, monthly_file, expected_cost_center)
     findings += check_missing_explanations(detail_rows)
     findings += check_electric_tie_out(monthly_rows)
