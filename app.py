@@ -46,8 +46,13 @@ def show_findings(findings):
     st.dataframe(discuss, use_container_width=True, hide_index=True)
 
 
-def run_button(key, ready):
-    return st.button("Run Analysis", type="primary", key=key, disabled=not ready)
+def run_button(key, requirements):
+    """requirements: {label: is_satisfied_bool}. Shows exactly what's missing
+    instead of just leaving the button greyed out with no explanation."""
+    missing = [label for label, ok in requirements.items() if not ok]
+    if missing:
+        st.caption(f"⚠️ Run Analysis is disabled - still need: {', '.join(missing)}.")
+    return st.button("Run Analysis", type="primary", key=key, disabled=bool(missing))
 
 
 def report_error():
@@ -123,7 +128,10 @@ with tabs[0]:
     detail_pdf = picked['Budget Analysis Detail']
     monthly_pdf = picked['Monthly Budget Detail']
 
-    if run_button("b1_run", summary_pdf and detail_pdf and monthly_pdf and building):
+    if run_button("b1_run", {
+        'Budget Analysis Summary': bool(summary_pdf), 'Budget Analysis Detail': bool(detail_pdf),
+        'Monthly Budget Detail': bool(monthly_pdf), 'Building name': bool(building),
+    }):
         try:
             results = kardin_parser.run(summary_pdf, detail_pdf, monthly_pdf)
             st.session_state.bucket_results[(1, building)] = {'results': results, 'detail_pdf': detail_pdf}
@@ -154,8 +162,11 @@ with tabs[1]:
     rent_roll_pdf = picked['Rent Roll']
     stacking_pdf = picked['Stacking Plan']
 
-    ready2 = all([free_rent_pdf, rent_lab_pdf, occupancy_pdf, rent_roll_pdf, stacking_pdf, building])
-    if run_button("b2_run", ready2):
+    if run_button("b2_run", {
+        'Free Rent': bool(free_rent_pdf), 'Base Rent - Retail': bool(rent_lab_pdf),
+        'Occupancy Summary': bool(occupancy_pdf), 'Rent Roll': bool(rent_roll_pdf),
+        'Stacking Plan': bool(stacking_pdf), 'Building name': bool(building),
+    }):
         try:
             results = leasing_parser.run(free_rent_pdf, rent_lab_pdf, occupancy_pdf, rent_roll_pdf, stacking_pdf)
             st.session_state.bucket_results[(2, building)] = {'results': results}
@@ -187,8 +198,11 @@ with tabs[2]:
     if xlsxs and len(xlsxs) > 1:
         st.warning(f"{len(xlsxs)} .xlsx files uploaded - using '{fixed_factor_xlsx.name}'.")
 
-    ready3 = all([calc_est_pdf, recovery_monthly_pdf, gross_up_pdf, fixed_factor_xlsx, building])
-    if run_button("b3_run", ready3):
+    if run_button("b3_run", {
+        'Recovery Calc Est': bool(calc_est_pdf), 'Recovery Monthly': bool(recovery_monthly_pdf),
+        'Gross Up Schedule': bool(gross_up_pdf), 'Fixed Factor Calcs (.xlsx)': bool(fixed_factor_xlsx),
+        'Building name': bool(building),
+    }):
         try:
             results = recoveries_parser.run(calc_est_pdf, recovery_monthly_pdf, gross_up_pdf, fixed_factor_xlsx)
             st.session_state.bucket_results[(3, building)] = {'results': results}
@@ -221,7 +235,10 @@ with tabs[3]:
     else:
         st.caption("Bucket 1 not yet run for this building - GL tie-out will be skipped.")
 
-    if run_button("b4_run", expense_detail_pdf and mgmt_fee_a_pdf and mgmt_fee_b_pdf and building):
+    if run_button("b4_run", {
+        'Expense Detail': bool(expense_detail_pdf), 'Mgmt Fee Calc - File 1': bool(mgmt_fee_a_pdf),
+        'Mgmt Fee Calc - File 2': bool(mgmt_fee_b_pdf), 'Building name': bool(building),
+    }):
         try:
             bucket1_rows = b1_entry['results']['detail_rows'] if b1_entry else None
             results = expense_parser.run(
@@ -258,7 +275,9 @@ with tabs[4]:
     else:
         st.caption("Bucket 1 not yet run for this building - GL tie-out will be skipped.")
 
-    if run_button("b5_run", capex_pdf and tis_pdf and lcs_pdf and building):
+    if run_button("b5_run", {
+        'Capex': bool(capex_pdf), 'TIs': bool(tis_pdf), 'LCs': bool(lcs_pdf), 'Building name': bool(building),
+    }):
         try:
             capex_line_rows, capex_totals_rows = expense_parser.parse_expense_detail(capex_pdf)
             bucket1_rows = b1_entry['results']['detail_rows'] if b1_entry else None
@@ -293,7 +312,10 @@ with tabs[5]:
     else:
         st.caption("Bucket 1 not yet run for this building - reforecast drift check will be skipped.")
 
-    if run_button("b6_run", fc_detail_pdf and fc_monthly_pdf and building):
+    if run_button("b6_run", {
+        '2026B v 2026F Detail': bool(fc_detail_pdf), '2026F Monthly Detail': bool(fc_monthly_pdf),
+        'Building name': bool(building),
+    }):
         try:
             bucket1_rows = b1_entry['results']['detail_rows'] if b1_entry else None
             bucket1_pdf = b1_entry['detail_pdf'] if b1_entry else None
@@ -320,7 +342,7 @@ with tabs[6]:
     else:
         st.caption("Bucket 2 not yet run for this building - Occupancy Summary tie-out will be skipped.")
 
-    if run_button("b7_run", lease_exp_pdf and building):
+    if run_button("b7_run", {'Lease Expiration Schedule': bool(lease_exp_pdf), 'Building name': bool(building)}):
         try:
             occupancy_rows = b2_entry['results']['occupancy_rows'] if b2_entry else None
             results = xtra_parser.run(lease_exp_pdf, occupancy_rows=occupancy_rows)
