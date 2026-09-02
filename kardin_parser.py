@@ -313,7 +313,7 @@ def check_revision_mismatch(summary_file, detail_file, monthly_file):
     return findings
 
 
-def check_multiple_cost_centers(summary_file, detail_file, monthly_file):
+def check_multiple_cost_centers(summary_file, detail_file, monthly_file, expected_cost_center=None):
     """
     parse_analysis_report/parse_monthly_detail have only ever been validated
     against single-cost-center exports of this report type. If Kardin breaks
@@ -323,6 +323,11 @@ def check_multiple_cost_centers(summary_file, detail_file, monthly_file):
     gl=None - which every check in this module silently skips. That means a
     combined-scope export could produce a clean-looking zero-finding result
     that's actually just not checking anything. Flag it instead of guessing.
+
+    expected_cost_center: optional - from a property's config.yaml (see
+    config_loader.py). When given, ALSO flags a single-cost-center file that's
+    scoped to the WRONG cost center (e.g. B3's Detail file accidentally
+    carries B4's export) - not just files scoped to more than one.
     """
     findings = []
     files = {'Summary': summary_file, 'Detail': detail_file, 'Monthly Detail': monthly_file}
@@ -346,20 +351,37 @@ def check_multiple_cost_centers(summary_file, detail_file, monthly_file):
                 'Status': 'Open',
                 'Source Check': 'Multiple cost centers in single-building report',
             })
+        elif expected_cost_center and centers and centers[0].lower() != expected_cost_center.lower():
+            findings.append({
+                'Report Section': '1. General',
+                'GL Acct': '',
+                'Line Item': 'GENERAL',
+                'Budget Year': 'N/A',
+                'Priority': 'Must Fix',
+                'Comment': (
+                    f"{label} is scoped to cost center '{centers[0]}', but this building is configured "
+                    f"as '{expected_cost_center}'. Likely the wrong file was picked for this building - "
+                    "every finding below may actually belong to a different building."
+                ),
+                'Status': 'Open',
+                'Source Check': 'Cost center mismatch',
+            })
     return findings
 
 
-def run(summary_file, detail_file, monthly_file):
+def run(summary_file, detail_file, monthly_file, expected_cost_center=None):
     """Parse all three files and run all bucket-1 checks. Files can be paths or
     Streamlit UploadedFile objects (each is read multiple times, so callers
     passing UploadedFile should not need to seek - pdfplumber reads fully
-    each time it's opened, and Streamlit's UploadedFile supports re-reading)."""
+    each time it's opened, and Streamlit's UploadedFile supports re-reading).
+
+    expected_cost_center: optional, see check_multiple_cost_centers."""
     summary_rows = parse_analysis_report(summary_file)
     detail_rows = parse_analysis_report(detail_file)
     monthly_rows = parse_monthly_detail(monthly_file)
 
     findings = []
-    findings += check_multiple_cost_centers(summary_file, detail_file, monthly_file)
+    findings += check_multiple_cost_centers(summary_file, detail_file, monthly_file, expected_cost_center)
     findings += check_missing_explanations(detail_rows)
     findings += check_electric_tie_out(monthly_rows)
     findings += check_detail_vs_monthly_totals(detail_rows, monthly_rows)

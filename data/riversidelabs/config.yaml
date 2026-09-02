@@ -1,0 +1,9 @@
+# Riverside Labs - single cost center, no B<n> filename tagging (batch mode
+# never triggers for this property). See data/TEMPLATE/config.yaml for field docs.
+
+property_name: 'Riverside Labs'
+
+cost_centers:
+  - tag: null
+    code: 'west20'
+    name: '20 Riverside'

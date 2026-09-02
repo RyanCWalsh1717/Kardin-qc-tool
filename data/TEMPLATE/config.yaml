@@ -1,0 +1,43 @@
+# ══════════════════════════════════════════════════════════════════════════
+# Kardin QC Tool — Property Configuration Template
+# ══════════════════════════════════════════════════════════════════════════
+#
+# HOW TO USE
+# 1. Copy this file to  data/[your-property-slug]/config.yaml
+#    (slug is internal to this tool only - doesn't need to match Yardi)
+# 2. Fill in property_name and cost_centers
+# 3. Commit to GitHub → Streamlit redeploys in ~1-2 minutes
+# 4. The property will appear in the app's Property selector
+#
+# WHAT THIS IS FOR
+# Some properties (e.g. Lexington Labs) export Bucket 1/6 files per building,
+# tagged 'B1'/'B2'/... in the filename, and app.py's batch mode runs all of
+# them at once. Without a config, batch mode just names each one "B1", "B2",
+# etc. With a config, it uses the real cost-center name instead, AND
+# kardin_parser cross-checks that each building's Detail/Monthly files are
+# actually scoped to the cost center they're supposed to be (catches e.g.
+# accidentally re-running B3's files under B4's name).
+#
+# A single-building property (e.g. Riverside Labs) still benefits from one
+# cost_centers entry with tag left blank - it just documents which cost
+# center that property's exports should be scoped to.
+# ══════════════════════════════════════════════════════════════════════════
+
+property_name: 'CHANGE_ME'   # ← REQUIRED. Shown in the app's Property selector, e.g. 'Lex Labs'
+
+cost_centers:
+  # tag:  the 'B<n>' filename prefix Kardin uses for this building, as a
+  #       string ('1', '2', ...) - leave blank/omit for a property that
+  #       doesn't tag files per building (single cost center only).
+  # code: the exact cost-center code as it appears in Kardin's own
+  #       "Selected Cost Centers :" line (case-sensitive) - e.g. 'lexlab-1'
+  #       or 'west20'. Used to validate the right file was picked.
+  # name: display name used as the default building name in batch mode.
+
+  - tag: '1'
+    code: 'CHANGE_ME'          # e.g. lexlab-1
+    name: 'CHANGE_ME'          # e.g. 'B1 - lexlab-1'
+
+  # - tag: '2'
+  #   code: 'CHANGE_ME'
+  #   name: 'CHANGE_ME'

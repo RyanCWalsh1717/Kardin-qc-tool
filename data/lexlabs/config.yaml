@@ -1,0 +1,25 @@
+# Lexington Labs - 5 buildings/cost centers, each tagged B1-B5 in Kardin's
+# Bucket 1 and Bucket 6 filenames. See data/TEMPLATE/config.yaml for field docs.
+
+property_name: 'Lex Labs'
+
+cost_centers:
+  - tag: '1'
+    code: 'lexlab-1'
+    name: 'B1 - lexlab-1'
+
+  - tag: '2'
+    code: 'lexlab-2'
+    name: 'B2 - lexlab-2'
+
+  - tag: '3'
+    code: 'lexlab-3'
+    name: 'B3 - lexlab-3'
+
+  - tag: '4'
+    code: 'lexlab-4'
+    name: 'B4 - lexlab-4'
+
+  - tag: '5'
+    code: 'lexlab-5'
+    name: 'B5 - lexlab-5'

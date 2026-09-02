@@ -6,6 +6,7 @@ import openpyxl
 import pandas as pd
 import streamlit as st
 
+import config_loader
 import kardin_parser
 import leasing_parser
 import recoveries_parser
@@ -228,10 +229,11 @@ def batch_runner(all_files, slot_rules, key_prefix, bucket_num, run_fn, store_ex
     tag + keyword matching only) and stores each building's results under its
     own name, exactly like a normal single run.
 
-    run_fn: (picked_dict, building_name) -> results dict, e.g.
-            lambda p, bname: kardin_parser.run(p['Summary'], ...) - building_name is
+    run_fn: (picked_dict, building_name, tag) -> results dict, e.g.
+            lambda p, bname, tag: kardin_parser.run(p['Summary'], ...) - building_name is
             this tag's name (for cross-bucket lookups keyed by name, e.g. bucket 6
-            needing bucket 1's results for the SAME building).
+            needing bucket 1's results for the SAME building); tag is the raw 'B<n>'
+            number, for callers that need to look up a property config entry.
     store_extra: optional (picked_dict) -> dict merged into the stored bucket_results entry
                  (e.g. {'detail_pdf': p['Budget Analysis Detail']})
     """
@@ -243,11 +245,14 @@ def batch_runner(all_files, slot_rules, key_prefix, bucket_num, run_fn, store_ex
     st.caption(f"{len(tags)} building tags found in the uploaded files: {', '.join('B' + t for t in tags)}. "
                "The dropdowns above only select one file per slot; this runs the bucket once per tag "
                "instead, fully automatically, and stores each as its own building.")
+    property_cfg = st.session_state.get('property_cfg')
     names = {}
     cols = st.columns(len(tags))
     for col, t in zip(cols, tags):
         with col:
-            names[t] = st.text_input(f"Name for B{t}", value=f"B{t}", key=f'{key_prefix}_batch_name_{t}')
+            cc = config_loader.cost_center_for_tag(property_cfg, t)
+            default_name = cc['name'] if cc else f'B{t}'
+            names[t] = st.text_input(f"Name for B{t}", value=default_name, key=f'{key_prefix}_batch_name_{t}')
 
     if st.button(f"Run Analysis for all {len(tags)} buildings", key=f'{key_prefix}_batch_run'):
         for t in tags:
@@ -258,7 +263,7 @@ def batch_runner(all_files, slot_rules, key_prefix, bucket_num, run_fn, store_ex
                 st.warning(f"B{t} ('{bname}') skipped - couldn't auto-match: {', '.join(missing)}.")
                 continue
             try:
-                results = run_fn(picked, bname)
+                results = run_fn(picked, bname, t)
                 entry = {'results': results}
                 if store_extra:
                     entry.update(store_extra(picked))
@@ -270,6 +275,20 @@ def batch_runner(all_files, slot_rules, key_prefix, bucket_num, run_fn, store_ex
                 st.error(f"B{t} ('{bname}') failed to parse:")
                 st.code(traceback.format_exc())
 
+
+st.header("Property")
+_properties = config_loader.list_properties()
+_prop_options = ['(none - manual building names only)'] + [p['name'] for p in _properties]
+_prop_choice = st.selectbox(
+    "Property config (optional)", _prop_options,
+    help="Loads data/{property}/config.yaml - auto-fills batch mode's per-building names with the "
+         "real cost-center name, and lets the parser flag a building's files if they're accidentally "
+         "scoped to the wrong cost center. Not required - everything works with manual names too.",
+)
+st.session_state.property_cfg = (
+    config_loader.load_property_config(next(p['slug'] for p in _properties if p['name'] == _prop_choice))
+    if _prop_choice != _prop_options[0] else None
+)
 
 st.header("Building")
 building = st.text_input("Building name (must match the tracker's tab name)", value=st.session_state.building)
@@ -328,10 +347,15 @@ with tabs[0]:
         'Budget Analysis Detail': [(['detail'], MONTHLY_TOKENS)],
         'Monthly Budget Detail': [([t], []) for t in MONTHLY_TOKENS],
     }
+    def _b1_run(picked, bname, tag):
+        cc = config_loader.cost_center_for_tag(st.session_state.get('property_cfg'), tag)
+        return kardin_parser.run(
+            picked['Budget Analysis Summary'], picked['Budget Analysis Detail'], picked['Monthly Budget Detail'],
+            expected_cost_center=cc['code'] if cc else None,
+        )
+
     batch_runner(
-        all_files, b1_slot_rules, 'b1', 1,
-        run_fn=lambda p, bname: kardin_parser.run(
-            p['Budget Analysis Summary'], p['Budget Analysis Detail'], p['Monthly Budget Detail']),
+        all_files, b1_slot_rules, 'b1', 1, run_fn=_b1_run,
         store_extra=lambda p: {'detail_pdf': p['Budget Analysis Detail']},
     )
 
@@ -527,7 +551,7 @@ with tabs[5]:
         '2026F Monthly Detail': [([t], []) for t in MONTHLY_TOKENS],
     }
 
-    def _b6_run(picked, bname):
+    def _b6_run(picked, bname, tag):
         b1e = st.session_state.bucket_results.get((1, bname))
         return forecast_parser.run(
             picked['2026B v 2026F Detail'], picked['2026F Monthly Detail'],
