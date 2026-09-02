@@ -192,6 +192,38 @@ def get_selected_cost_centers(pdf_file):
     return [c.strip() for c in m.group(1).split(',') if c.strip()]
 
 
+def parse_cost_center_roster(pdf_file):
+    """
+    Kardin's dedicated 'Selected Cost Centers' report (rptSelectedCostCenters) -
+    NOT the same as the "Selected Cost Centers :" line every other report
+    carries (see get_selected_cost_centers above, which reads ONE report's own
+    scope). This one is a standalone two-column table (Cost Center ID / Cost
+    Center Name) listing EVERY cost center Kardin has defined for the
+    property - the authoritative source for a property's config.yaml
+    cost_centers list (see config_loader.py), rather than inferring it from
+    which per-building files happen to have been uploaded.
+
+    Returns [{'code': ..., 'name': ...}], in the report's own row order.
+    """
+    rows = []
+    header_seen = False
+    for page_lines in extract_pages_text(pdf_file):
+        for raw in page_lines:
+            line = raw.rstrip()
+            stripped = line.strip()
+            if not header_seen:
+                if stripped.startswith('Cost Center ID'):
+                    header_seen = True
+                continue
+            if is_boilerplate(line) or not stripped:
+                continue
+            toks = stripped.split()
+            if len(toks) < 2:
+                continue
+            rows.append({'code': toks[0], 'name': ' '.join(toks[1:])})
+    return rows
+
+
 def meets_materiality(dollar, pct):
     if dollar is None or pct is None:
         return False

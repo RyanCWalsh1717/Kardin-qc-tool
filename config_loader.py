@@ -51,3 +51,20 @@ def cost_center_for_tag(cfg, tag):
         if str(cc.get('tag')) == str(tag):
             return cc
     return None
+
+
+def generate_config_yaml(property_name, cost_centers):
+    """cost_centers: [{'tag': str-or-None, 'code': str, 'name': str}, ...] -
+    typically built from kardin_parser.parse_cost_center_roster (Kardin's own
+    'Selected Cost Centers' report) plus user-assigned B<n> tags. Produces
+    config.yaml text in the same style as the hand-written examples under
+    data/ - ready to save as data/{slug}/config.yaml."""
+    lines = [f"property_name: '{property_name}'", '', 'cost_centers:']
+    for cc in cost_centers:
+        tag = cc.get('tag')
+        tag_str = f"'{tag}'" if tag else 'null'
+        lines.append(f"  - tag: {tag_str}")
+        lines.append(f"    code: '{cc['code']}'")
+        lines.append(f"    name: '{cc['name']}'")
+        lines.append('')
+    return '\n'.join(lines).rstrip() + '\n'

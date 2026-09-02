@@ -290,6 +290,51 @@ st.session_state.property_cfg = (
     if _prop_choice != _prop_options[0] else None
 )
 
+with st.expander("Import / update cost centers from Kardin"):
+    st.caption(
+        "Upload Kardin's own 'Selected Cost Centers' report (rptSelectedCostCenters) - the "
+        "authoritative list of every cost center defined for a property, straight from Kardin "
+        "instead of hand-typed. Not every cost center is necessarily one of this tool's batch-mode "
+        "buildings (a property can have cost centers for common areas, ground leases, etc. that "
+        "were never part of the budget review) - check 'Include' only for the ones that are, and "
+        "give each its 'B<n>' filename tag if it uses one."
+    )
+    roster_pdf = st.file_uploader("Selected Cost Centers report (.pdf)", type="pdf", key="cc_roster_upload")
+    if roster_pdf:
+        roster = kardin_parser.parse_cost_center_roster(roster_pdf)
+        if not roster:
+            st.warning("Couldn't find any cost center rows in that file - is it the rptSelectedCostCenters report?")
+        else:
+            st.caption(f"Found {len(roster)} cost center(s).")
+            df = pd.DataFrame([{
+                'Include': False, 'Tag (B<n>, optional)': '', 'Code': r['code'], 'Display Name': r['name'],
+            } for r in roster])
+            edited = st.data_editor(df, key='cc_roster_editor', hide_index=True, use_container_width=True)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                cc_prop_name = st.text_input("Property display name", key='cc_roster_propname')
+            with col2:
+                cc_slug = st.text_input("Folder slug (data/<slug>/config.yaml)", key='cc_roster_slug')
+
+            if st.button("Generate config.yaml", key='cc_roster_generate'):
+                included = edited[edited['Include']]
+                if not cc_prop_name or not cc_slug or included.empty:
+                    st.error("Need a property display name, a folder slug, and at least one included cost center.")
+                else:
+                    cost_centers = [{
+                        'tag': (row['Tag (B<n>, optional)'] or '').strip() or None,
+                        'code': row['Code'], 'name': row['Display Name'],
+                    } for _, row in included.iterrows()]
+                    yaml_text = config_loader.generate_config_yaml(cc_prop_name, cost_centers)
+                    st.code(yaml_text, language='yaml')
+                    st.download_button(
+                        "Download config.yaml", data=yaml_text, file_name='config.yaml', mime='text/yaml',
+                        key='cc_roster_download',
+                    )
+                    st.caption(f"Commit this as data/{cc_slug}/config.yaml on GitHub - Streamlit redeploys in "
+                               "~1-2 minutes and it'll appear in the Property selector above.")
+
 st.header("Building")
 building = st.text_input("Building name (must match the tracker's tab name)", value=st.session_state.building)
 st.session_state.building = building
