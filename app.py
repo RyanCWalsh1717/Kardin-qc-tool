@@ -116,6 +116,52 @@ def show_assumptions_check(monthly_rows, key_prefix):
             st.markdown(f"- {f['Comment']}")
 
 
+def show_interest_check(monthly_rows, key_prefix):
+    """Optional, PURELY INFORMATIONAL cross-check: GRP's construction-loan
+    Interest Carry schedule vs Kardin's GL 801110 (Interest Expense) for
+    this building. Never asserts a mismatch is wrong - see
+    assumptions_parser.check_interest_vs_bucket1's docstring for why."""
+    with st.expander("Cross-check against Interest Calculations (optional, informational only)"):
+        st.caption("Upload GRP's own Interest Calculations workbook to compare its construction-loan "
+                   "interest schedule against Kardin's GL 801110 for this building. Purely informational - "
+                   "the two can legitimately differ (refinancing, a different note structure, timing) and "
+                   "this check can't tell which; it's for you to judge, not a rule violation.")
+        xlsx_file = st.file_uploader("Interest Calculations (.xlsx)", type="xlsx", key=f'{key_prefix}_interest_upload')
+        if not xlsx_file:
+            return
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, data_only=True, read_only=True)
+            sheet_names = wb.sheetnames
+        except Exception:
+            st.error("Couldn't read that file as an Excel workbook.")
+            return
+        col1, col2 = st.columns(2)
+        with col1:
+            sheet_name = st.selectbox("Which tab is this property?", sheet_names, key=f'{key_prefix}_interest_sheet')
+        with col2:
+            budget_year = st.number_input("Budget year to compare", min_value=2000, max_value=2100,
+                                          value=date.today().year + 1, key=f'{key_prefix}_interest_year')
+        try:
+            xlsx_file.seek(0)
+            sections = assumptions_parser.parse_interest_calculations(xlsx_file, sheet_name)
+        except Exception:
+            report_error()
+            return
+        if not sections:
+            st.info("No '... Interest Calculation' section found on that tab.")
+            return
+        chosen = st.selectbox("Which section is THIS building?", [s['title'] for s in sections],
+                              key=f'{key_prefix}_interest_section')
+        section = next(s for s in sections if s['title'] == chosen)
+        findings = assumptions_parser.check_interest_vs_bucket1(
+            section, monthly_rows, int(budget_year), source_label=f"{xlsx_file.name} ({sheet_name})")
+        if not findings:
+            st.info("No difference beyond tolerance found for this building/year.")
+            return
+        for f in findings:
+            st.markdown(f"- {f['Comment']}")
+
+
 def show_leasing_assumptions_check(occupancy_rows, key_prefix):
     """Optional cross-check: GRP's own Leasing Assumptions workbook (vacant/
     expiring suites GRP told the PM to model - RSF, commencement date, term,
@@ -496,6 +542,7 @@ def batch_runner(all_files, slot_rules, key_prefix, bucket_num, run_fn, store_ex
                         cc = config_loader.cost_center_for_tag(property_cfg, t)
                         show_expense_categorization(bname, cost_center_code=cc['code'] if cc else None)
                         show_assumptions_check(results['monthly_rows'], key_prefix=f'b1_batch_{t}')
+                        show_interest_check(results['monthly_rows'], key_prefix=f'b1_batch_{t}')
             except Exception:
                 st.error(f"B{t} ('{bname}') failed to parse:")
                 st.code(traceback.format_exc())
@@ -615,6 +662,7 @@ with tabs[0]:
         _cc = config_loader.cost_center_for_name(st.session_state.get('property_cfg'), building)
         show_expense_categorization(building, cost_center_code=_cc['code'] if _cc else None)
         show_assumptions_check(entry['results']['monthly_rows'], key_prefix='b1_single')
+        show_interest_check(entry['results']['monthly_rows'], key_prefix='b1_single')
 
     b1_slot_rules = {
         'Budget Analysis Summary': [(['summary'], [])],

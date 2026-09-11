@@ -400,3 +400,103 @@ def check_capex_plan_vs_bucket5(plan_totals, capex_line_rows, building_to_cost_c
                 'Status': 'Open', 'Source Check': 'CapEx Plan vs Kardin Capex.pdf',
             })
     return findings
+
+
+def parse_interest_calculations(xlsx_file, sheet_name):
+    """
+    "Interest Calculations - 2027.xlsx" (or equivalent) - one sheet per
+    property, with one or more stacked sub-sections (one per building/loan,
+    e.g. "20 Riverside Interest Calculation" then "One Riverside Interest
+    Calculation" below it in the same sheet). Reads each sub-section's own
+    "Interest Carry" row - the monthly $ that should relate to Kardin's
+    interest expense GL (801110) for that building. A cell holding a
+    formula-error string (e.g. '#REF!' - confirmed present in at least one
+    real property's sheet) is treated as no data for that month (None), not
+    silently coerced to $0.
+
+    Returns [{'title': str (e.g. '20 Riverside Interest Calculation'),
+              'monthly': {date: float or None}}] in sheet order.
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(xlsx_file, data_only=True)
+    ws = wb[sheet_name]
+
+    sections = []
+    for r in range(1, ws.max_row + 1):
+        title = ws.cell(row=r, column=3).value
+        if not (isinstance(title, str) and title.strip().lower().endswith('interest calculation')):
+            continue
+        date_row = r + 1
+        month_cols = [c for c in range(1, ws.max_column + 1)
+                      if isinstance(ws.cell(row=date_row, column=c).value, datetime.datetime)]
+        if not month_cols:
+            continue
+        month_dates = [ws.cell(row=date_row, column=c).value.date() for c in month_cols]
+        # search until the NEXT section's title (or a reasonable cap) rather than a fixed
+        # offset - some properties have extra rows here (e.g. Lexington Labs lists four
+        # separate note balances - A, B, Mezz, Mezz - before Interest Carry)
+        carry_row = None
+        for rr in range(date_row + 1, min(date_row + 20, ws.max_row + 1)):
+            label = ws.cell(row=rr, column=3).value
+            if isinstance(label, str) and label.strip().lower().endswith('interest calculation'):
+                break  # ran into the next section without finding one
+            if isinstance(label, str) and label.strip().lower() == 'interest carry':
+                carry_row = rr
+                break
+        if carry_row is None:
+            continue
+        monthly = {}
+        for c, d in zip(month_cols, month_dates):
+            v = ws.cell(row=carry_row, column=c).value
+            monthly[d] = v if isinstance(v, (int, float)) else None
+        sections.append({'title': title.strip(), 'monthly': monthly})
+    return sections
+
+
+def check_interest_vs_bucket1(interest_section, bucket1_monthly_rows, budget_year, source_label, tolerance_pct=0.05):
+    """
+    INFORMATIONAL comparison only (always 'For Discussion', never 'Must
+    Fix') between one building's Interest Carry schedule and Kardin's GL
+    801110 (Interest Expense) for the same months. Unlike the other three
+    assumption checks, this one does not assert a mismatch is wrong -
+    verified against real Riverside Labs data that these two don't
+    necessarily tie cleanly (Kardin showed $0 for several months where the
+    loan schedule showed a steady balance, which may reflect a legitimate
+    construction-to-permanent refinancing, a different GL/note structure
+    that isn't captured here, or a genuine gap) - distinguishing those
+    needs someone who knows the deal's financing structure, not something
+    this check can determine on its own. Skips any month where the
+    assumption side is None (a '#REF!' formula error, or genuinely no data).
+
+    interest_section: ONE entry from parse_interest_calculations() output
+    (already picked for the right building by the caller).
+    """
+    monthly_1801110 = {r['gl']: r for r in bucket1_monthly_rows if r.get('gl') == '801110'}
+    if '801110' not in monthly_1801110:
+        return []
+    b1 = monthly_1801110['801110']
+    diffs = []
+    for d, assumed in interest_section['monthly'].items():
+        if assumed is None or d.year != budget_year:
+            continue
+        month_idx = d.month - 1
+        if month_idx >= len(b1['months']):
+            continue
+        actual = b1['months'][month_idx]
+        base = max(abs(assumed), 1)
+        if abs(actual - assumed) / base > tolerance_pct:
+            diffs.append(f"{d.strftime('%b-%y')}: schedule ${assumed:,.0f} vs Kardin ${actual:,.0f}")
+    if not diffs:
+        return []
+    return [{
+        'Report Section': '1. General', 'GL Acct': '801110', 'Line Item': interest_section['title'],
+        'Budget Year': 'Next Year Budget', 'Priority': 'For Discussion',
+        'Comment': (
+            f"{interest_section['title']}: GRP's construction-loan Interest Carry schedule differs from "
+            f"Kardin's GL 801110 (Interest Expense) in {len(diffs)} month(s): " + '; '.join(diffs[:6]) +
+            ('...' if len(diffs) > 6 else '') + f". Per {source_label}. This is informational, not a rule "
+            "violation - the two may legitimately differ (refinancing, a different note structure, timing) "
+            "or Kardin's GL may need updating; needs someone who knows this deal's financing to judge."
+        ),
+        'Status': 'Open', 'Source Check': 'Interest schedule vs Kardin (informational)',
+    }]
