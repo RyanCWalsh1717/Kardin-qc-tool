@@ -6,6 +6,7 @@ import openpyxl
 import pandas as pd
 import streamlit as st
 
+import assumptions_parser
 import config_loader
 import kardin_parser
 import leasing_parser
@@ -72,6 +73,47 @@ def show_expense_categorization(building_key, cost_center_code=None):
                "review, not a rule violation.")
     for f in cat_findings:
         st.markdown(f"- {f['Comment']}")
+
+
+def show_assumptions_check(monthly_rows, key_prefix):
+    """Optional cross-check: GRP's own GL-level monthly budget assumptions
+    (a separate planning workbook GRP provides, not read from Kardin) vs
+    Kardin's actual Monthly Budget Detail for this building. Nothing here
+    is required for the rest of the tool - upload is entirely optional."""
+    with st.expander("Cross-check against GRP Budget Assumptions (optional)"):
+        st.caption("Upload GRP's own planning workbook (e.g. '2027 GRP Budget Assumptions.xlsx') to check "
+                   "whether Kardin's Monthly Budget Detail actually reflects what GRP assumed, GL by GL.")
+        xlsx_file = st.file_uploader("GRP Budget Assumptions (.xlsx)", type="xlsx", key=f'{key_prefix}_assump_upload')
+        if not xlsx_file:
+            return
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, data_only=True, read_only=True)
+            sheet_names = wb.sheetnames
+        except Exception:
+            st.error("Couldn't read that file as an Excel workbook.")
+            return
+        col1, col2 = st.columns(2)
+        with col1:
+            sheet_name = st.selectbox("Which tab is this building?", sheet_names, key=f'{key_prefix}_assump_sheet')
+        with col2:
+            budget_year = st.number_input(
+                "Budget year to compare (the 'next year' column set - the workbook usually also carries an "
+                "earlier reforecast tail that should NOT be compared against this Kardin file)",
+                min_value=2000, max_value=2100, value=date.today().year + 1, key=f'{key_prefix}_assump_year')
+        try:
+            xlsx_file.seek(0)
+            assumption_rows = assumptions_parser.parse_grp_budget_assumptions(xlsx_file, sheet_name)
+            findings = assumptions_parser.check_assumptions_vs_bucket1(
+                assumption_rows, monthly_rows, source_label=f"{xlsx_file.name} ({sheet_name})",
+                budget_year=int(budget_year))
+        except Exception:
+            report_error()
+            return
+        if not findings:
+            st.info("No mismatches found against this assumption sheet for this budget year.")
+            return
+        for f in findings:
+            st.markdown(f"- {f['Comment']}")
 
 
 def show_stats(stats):
@@ -357,6 +399,7 @@ def batch_runner(all_files, slot_rules, key_prefix, bucket_num, run_fn, store_ex
                     if bucket_num == 1:
                         cc = config_loader.cost_center_for_tag(property_cfg, t)
                         show_expense_categorization(bname, cost_center_code=cc['code'] if cc else None)
+                        show_assumptions_check(results['monthly_rows'], key_prefix=f'b1_batch_{t}')
             except Exception:
                 st.error(f"B{t} ('{bname}') failed to parse:")
                 st.code(traceback.format_exc())
@@ -475,6 +518,7 @@ with tabs[0]:
         show_findings(entry['results']['findings'])
         _cc = config_loader.cost_center_for_name(st.session_state.get('property_cfg'), building)
         show_expense_categorization(building, cost_center_code=_cc['code'] if _cc else None)
+        show_assumptions_check(entry['results']['monthly_rows'], key_prefix='b1_single')
 
     b1_slot_rules = {
         'Budget Analysis Summary': [(['summary'], [])],
