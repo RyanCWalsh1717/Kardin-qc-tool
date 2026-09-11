@@ -116,6 +116,61 @@ def show_assumptions_check(monthly_rows, key_prefix):
             st.markdown(f"- {f['Comment']}")
 
 
+def show_leasing_assumptions_check(occupancy_rows, key_prefix):
+    """Optional cross-check: GRP's own Leasing Assumptions workbook (vacant/
+    expiring suites GRP told the PM to model - RSF, commencement date, term,
+    free rent) vs whether Kardin's Occupancy Summary actually reflects it.
+    Uses the current property's cost_centers config to map each building
+    name in the workbook (e.g. '20 Riverside') to its Kardin cost center
+    (e.g. 'west20') - without a property selected, building names can't be
+    resolved and nothing will match."""
+    with st.expander("Cross-check against Leasing Assumptions (optional)"):
+        st.caption("Upload GRP's own Leasing Assumptions workbook (e.g. '2027 Leasing Assumptions_Final.xlsx') "
+                   "to check whether Kardin's Occupancy Summary reflects the vacant/expiring suite assumptions "
+                   "GRP gave the PM. The sheet is reused year over year with one stacked block per budget cycle - "
+                   "only the block for the year you enter below is used.")
+        xlsx_file = st.file_uploader("Leasing Assumptions (.xlsx)", type="xlsx", key=f'{key_prefix}_lease_assump_upload')
+        if not xlsx_file:
+            return
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, data_only=True, read_only=True)
+            sheet_names = wb.sheetnames
+        except Exception:
+            st.error("Couldn't read that file as an Excel workbook.")
+            return
+        col1, col2 = st.columns(2)
+        with col1:
+            sheet_name = st.selectbox("Which tab is this property?", sheet_names, key=f'{key_prefix}_lease_assump_sheet')
+        with col2:
+            budget_year = st.number_input(
+                "Budget year (picks the matching 'Leasing Assumptions - ... {year} Budget' block)",
+                min_value=2000, max_value=2100, value=date.today().year + 1, key=f'{key_prefix}_lease_assump_year')
+        property_cfg = st.session_state.get('property_cfg')
+        building_to_cc = {cc['name']: cc['code'] for cc in (property_cfg or {}).get('cost_centers', [])
+                          if cc.get('name') and cc.get('code')}
+        if not building_to_cc:
+            st.warning("No property selected above (or it has no cost centers configured) - building names in "
+                       "this workbook (e.g. '20 Riverside') can't be mapped to a Kardin cost center, so nothing "
+                       "will match. Select a Property above first.")
+        try:
+            xlsx_file.seek(0)
+            assumption_rows = assumptions_parser.parse_leasing_assumptions(xlsx_file, sheet_name, int(budget_year))
+            findings = assumptions_parser.check_leasing_assumptions_vs_bucket2(
+                assumption_rows, occupancy_rows, building_to_cc, int(budget_year),
+                source_label=f"{xlsx_file.name} ({sheet_name})")
+        except Exception:
+            report_error()
+            return
+        if not assumption_rows:
+            st.info(f"No 'Leasing Assumptions - ... {int(budget_year)} Budget' block found on that tab.")
+            return
+        if not findings:
+            st.info(f"No mismatches found against the {int(budget_year)} Budget block.")
+            return
+        for f in findings:
+            st.markdown(f"- **[{f['Priority']}]** {f['Comment']}")
+
+
 def show_stats(stats):
     st.json(stats, expanded=False)
 
@@ -579,6 +634,7 @@ with tabs[1]:
         show_checklist(entry['results'].get('checklist'))
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
+        show_leasing_assumptions_check(entry['results']['occupancy_rows'], key_prefix='b2_single')
 
 # --------------------------------------------------------------------------- 3. Recoveries
 with tabs[2]:

@@ -11,6 +11,7 @@ Kardin's own format, so nothing here reuses kardin_parser's PDF-text
 helpers - it's straight openpyxl cell reading.
 """
 import datetime
+import re
 
 
 def parse_grp_budget_assumptions(xlsx_file, sheet_name):
@@ -119,4 +120,183 @@ def check_assumptions_vs_bucket1(assumption_rows, bucket1_monthly_rows, source_l
                 ),
                 'Status': 'Open', 'Source Check': 'GRP assumption vs Kardin Monthly Detail',
             })
+    return findings
+
+
+BLOCK_TITLE_RE = re.compile(r'^Leasing Assumptions\s*-\s*.*?(\d{4})\s*Budget\s*$', re.IGNORECASE)
+
+
+def parse_leasing_assumptions(xlsx_file, sheet_name, budget_year):
+    """
+    "2027 Leasing Assumptions_Final.xlsx" (or equivalent) - one sheet per
+    property, with REPEATED stacked blocks: one per budget cycle this same
+    file has been reused for (e.g. "Leasing Assumptions - 2024 Budget", then
+    "... - 2024 Reforecast/2025 Budget", etc., appended below each other
+    year over year - each is that cycle's own snapshot, not a correction of
+    the one before). Only the block whose title ends in "{budget_year}
+    Budget" is parsed - earlier cycles are history, not this run's
+    assumptions.
+
+    Returns [{'building': str, 'suite_num': str, 'rsf': float or None,
+              'new_lease_cd': date or str or None, 'term': str or None,
+              'free_rent': str or None, 'starting_base_rent': float or None}]
+    - one row per vacant/expiring suite assumption in that block. Header
+    columns are read dynamically (case-insensitive) since column order/count
+    drifts slightly between cycles (a 'New Tenant' column was added later).
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(xlsx_file, data_only=True)
+    ws = wb[sheet_name]
+
+    block_start = None
+    for r in range(1, ws.max_row + 1):
+        v = ws.cell(row=r, column=1).value
+        if isinstance(v, str) and v.strip().lower().startswith('leasing assumptions'):
+            m = BLOCK_TITLE_RE.match(v.strip())
+            if m and int(m.group(1)) == budget_year:
+                block_start = r
+                break
+    if block_start is None:
+        return []
+
+    header_row = block_start + 2  # title, then "The following suites...", then the header
+    headers = [str(ws.cell(row=header_row, column=c).value or '').strip().lower()
+               for c in range(1, ws.max_column + 1)]
+
+    def col_idx(*names):
+        for name in names:
+            for i, h in enumerate(headers):
+                if h == name:
+                    return i + 1
+        return None
+
+    c = {
+        'building': col_idx('building'), 'suite': col_idx('suite #', 'suite#'),
+        'rsf': col_idx('rsf'), 'cd': col_idx('new lease cd'), 'term': col_idx('term'),
+        'free': col_idx('free rent'), 'rent': col_idx('starting base rent'),
+    }
+
+    rows = []
+    for r in range(header_row + 1, ws.max_row + 1):
+        building = ws.cell(row=r, column=c['building']).value if c['building'] else None
+        if building is None:
+            if all(ws.cell(row=r, column=col).value is None for col in range(1, ws.max_column + 1)):
+                break
+            continue
+        rows.append({
+            'building': str(building).strip(),
+            'suite_num': str(ws.cell(row=r, column=c['suite']).value or '').strip() if c['suite'] else '',
+            'rsf': ws.cell(row=r, column=c['rsf']).value if c['rsf'] else None,
+            'new_lease_cd': ws.cell(row=r, column=c['cd']).value if c['cd'] else None,
+            'term': ws.cell(row=r, column=c['term']).value if c['term'] else None,
+            'free_rent': ws.cell(row=r, column=c['free']).value if c['free'] else None,
+            'starting_base_rent': ws.cell(row=r, column=c['rent']).value if c['rent'] else None,
+        })
+    return rows
+
+
+def _match_kardin_suite(suite_num, rsf, cost_center_code, kardin_suites):
+    """Best-effort match of one assumptions row to a Kardin suite code.
+    Confirmed against real Riverside Labs data: Kardin's suite code is
+    usually just the assumption's suite number zero-padded by one leading
+    digit under the cost center (e.g. '300' -> 'west20-0300'). BUT a suite
+    can get subdivided in Kardin after the assumption was made - several
+    assumption rows can then share the same suite # (e.g. three separate
+    '300' rows), each really corresponding to a DIFFERENT real Kardin suite
+    (0300/0301/0302), distinguishable only by RSF. Trying the padded-suite-
+    number match first would wrongly match all three to the same one, so
+    RSF (combined with the padded number when both agree, otherwise alone)
+    is checked before falling back to suite-number-only. Returns a suite
+    dict or None if no confident match is found (ambiguous or absent)."""
+    candidates = [s for s in kardin_suites if s['suite'].lower().startswith(f'{cost_center_code.lower()}-')]
+    padded = f'{cost_center_code.lower()}-0{suite_num}' if suite_num.isdigit() else None
+
+    if padded and rsf:
+        combined = [s for s in candidates
+                    if s['suite'].lower() == padded and s.get('rsf') and abs(s['rsf'] - rsf) <= 5]
+        if len(combined) == 1:
+            return combined[0]
+    if rsf:
+        rsf_matches = [s for s in candidates if s.get('rsf') and abs(s['rsf'] - rsf) <= 5]
+        if len(rsf_matches) == 1:
+            return rsf_matches[0]
+    if padded:
+        exact = [s for s in candidates if s['suite'].lower() == padded]
+        if len(exact) == 1:
+            return exact[0]
+    return None
+
+
+def check_leasing_assumptions_vs_bucket2(assumption_rows, occupancy_rows, building_to_cost_center,
+                                          budget_year, source_label):
+    """
+    For each vacant/expiring suite GRP assumed a new lease for, confirms:
+      1. The suite can be matched to a real Kardin suite at all.
+      2. RSF ties out.
+      3. If the assumed commencement date falls within this budget year (or
+         the tail end of the prior year, still active during it), Kardin's
+         Occupancy Summary should show a real lease-up (status Contract/New
+         with an actual commence date) for that suite - not 'Unknown' (no
+         leasing assumption modeled). A commencement date in a LATER year is
+         correctly not yet modeled - noted, not flagged.
+
+    Deliberately does NOT compare Starting Base Rent or Free Rent months
+    against Kardin's own monthly schedule - deriving a single "rate" from a
+    ramping/escalating monthly schedule isn't reliable enough yet to compare
+    confidently; scoped out rather than guessed at.
+
+    building_to_cost_center: {building name as it appears in the assumptions
+    sheet (e.g. '20 Riverside'): Kardin cost center code (e.g. 'west20')} -
+    from a property's config.yaml.
+    """
+    findings = []
+    unmatched = []
+    for a in assumption_rows:
+        cost_center = building_to_cost_center.get(a['building'])
+        if not cost_center:
+            unmatched.append(f"{a['building']} suite {a['suite_num']} (unknown building - no cost center mapped)")
+            continue
+        match = _match_kardin_suite(a['suite_num'], a['rsf'], cost_center, occupancy_rows)
+        if match is None:
+            unmatched.append(f"{a['building']} suite {a['suite_num']} ({a['rsf']} RSF)")
+            continue
+
+        if a['rsf'] and match.get('rsf') and abs(match['rsf'] - a['rsf']) > 5:
+            findings.append({
+                'Report Section': '9. Leasing & Rent', 'GL Acct': '', 'Line Item': match['suite'],
+                'Budget Year': 'Next Year Budget', 'Priority': 'For Discussion',
+                'Comment': (
+                    f"Leasing Assumptions lists {match['suite']} at {a['rsf']:,} RSF, but Kardin's "
+                    f"Occupancy Summary shows {match['rsf']:,} RSF. Per {source_label}."
+                ),
+                'Status': 'Open', 'Source Check': 'Leasing assumption RSF mismatch',
+            })
+
+        cd = a['new_lease_cd']
+        cd_date = cd if isinstance(cd, (datetime.date, datetime.datetime)) else None
+        if cd_date and cd_date.year <= budget_year:
+            if match['status'] == 'Unknown':
+                findings.append({
+                    'Report Section': '9. Leasing & Rent', 'GL Acct': '', 'Line Item': match['suite'],
+                    'Budget Year': 'Next Year Budget', 'Priority': 'Must Fix',
+                    'Comment': (
+                        f"Leasing Assumptions has {match['suite']} leasing up starting "
+                        f"{cd_date.strftime('%b %Y') if hasattr(cd_date, 'strftime') else cd_date} "
+                        f"({a['term']}, {a['free_rent']} free), which is within or before {budget_year} - "
+                        f"but Kardin's Occupancy Summary shows no leasing assumption at all for this suite "
+                        f"('Unknown' status). Per {source_label}. Confirm Kardin was updated to reflect this."
+                    ),
+                    'Status': 'Open', 'Source Check': 'Leasing assumption not modeled in Kardin',
+                })
+    if unmatched:
+        findings.append({
+            'Report Section': '9. Leasing & Rent', 'GL Acct': '', 'Line Item': 'GENERAL',
+            'Budget Year': 'N/A', 'Priority': 'For Discussion',
+            'Comment': (
+                f"{len(unmatched)} suite(s) from Leasing Assumptions couldn't be confidently matched to a "
+                f"Kardin suite (by suite number or RSF): {'; '.join(unmatched)}. Per {source_label}. "
+                "May just need a manual look, not necessarily an error."
+            ),
+            'Status': 'Open', 'Source Check': 'Leasing assumption suite not matched',
+        })
     return findings

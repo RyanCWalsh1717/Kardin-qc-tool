@@ -1,5 +1,10 @@
-# Riverside Labs - single cost center, no B<n> filename tagging (batch mode
-# never triggers for this property). See data/TEMPLATE/config.yaml for field docs.
+# Riverside Labs - no B<n> filename tagging (batch mode never triggers for
+# this property). Kardin's own rptSelectedCostCenters export shows 6 cost
+# centers total (West01, west15, west20, westfo, westfo15, westgl) - only
+# west20 (20 Riverside) and West01 (1 Riverside) have real budget files
+# tested so far; the other 4 aren't buildings this tool's buckets cover
+# (common areas / ground lease / etc.) so they're left out. See
+# data/TEMPLATE/config.yaml for field docs.
 
 property_name: 'Riverside Labs'
 
@@ -7,3 +12,7 @@ cost_centers:
   - tag: null
     code: 'west20'
     name: '20 Riverside'
+
+  - tag: null
+    code: 'West01'
+    name: '1 Riverside'
