@@ -171,6 +171,47 @@ def show_leasing_assumptions_check(occupancy_rows, key_prefix):
             st.markdown(f"- **[{f['Priority']}]** {f['Comment']}")
 
 
+def show_capex_plan_check(capex_line_rows, key_prefix):
+    """Optional cross-check: GRP's own 5-Year CapEx Plan's per-building
+    annual total (building-improvement capital only - HVAC, roof, etc.) vs
+    Kardin's actual Capex.pdf for the same building. Uses the current
+    property's cost_centers config to map building names (e.g. '20
+    Riverside') to Kardin cost centers (e.g. 'west20')."""
+    with st.expander("Cross-check against 5-Year CapEx Plan (optional)"):
+        st.caption("Upload GRP's own 5-Year CapEx Plan (e.g. 'GRP 5-Year CapEx Plan Riverside Labs....xlsx') "
+                   "to check whether Kardin's Capex.pdf reflects the planned building-improvement capital "
+                   "for the target year. Only GL 154500/171300 are compared - Leasing Commissions/Tenant "
+                   "Improvements are a different capital category, already checked elsewhere in this bucket.")
+        xlsx_file = st.file_uploader("5-Year CapEx Plan (.xlsx)", type="xlsx", key=f'{key_prefix}_capex_plan_upload')
+        if not xlsx_file:
+            return
+        budget_year = st.number_input(
+            "Budget year to compare", min_value=2000, max_value=2100,
+            value=date.today().year + 1, key=f'{key_prefix}_capex_plan_year')
+        property_cfg = st.session_state.get('property_cfg')
+        building_to_cc = {cc['name']: cc['code'] for cc in (property_cfg or {}).get('cost_centers', [])
+                          if cc.get('name') and cc.get('code')}
+        if not building_to_cc:
+            st.warning("No property selected above (or it has no cost centers configured) - building names "
+                       "in this workbook can't be mapped to a Kardin cost center. Select a Property above first.")
+        try:
+            xlsx_file.seek(0)
+            plan_totals = assumptions_parser.parse_capex_plan_portfolio_summary(xlsx_file, int(budget_year))
+            findings = assumptions_parser.check_capex_plan_vs_bucket5(
+                plan_totals, capex_line_rows, building_to_cc, int(budget_year), source_label=xlsx_file.name)
+        except Exception:
+            report_error()
+            return
+        if not plan_totals:
+            st.info(f"No {int(budget_year)} column found in that plan's Portfolio Summary tab.")
+            return
+        if not findings:
+            st.info(f"Ties out against the {int(budget_year)} Portfolio Summary for every mapped building.")
+            return
+        for f in findings:
+            st.markdown(f"- {f['Comment']}")
+
+
 def show_stats(stats):
     st.json(stats, expanded=False)
 
@@ -750,7 +791,9 @@ with tabs[4]:
                                        capex_totals_rows=capex_totals_rows,
                                        bucket1_west20_detail_rows=bucket1_rows,
                                        capex_pdf_missing=(capex_pdf is None))
-            st.session_state.bucket_results[(5, eff_building)] = {'results': results}
+            st.session_state.bucket_results[(5, eff_building)] = {
+                'results': results, 'capex_line_rows': capex_line_rows,
+            }
             st.success(f"Parsed - {len(results['findings'])} finding(s).")
         except Exception:
             report_error()
@@ -760,6 +803,7 @@ with tabs[4]:
         show_checklist(entry['results'].get('checklist'))
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
+        show_capex_plan_check(entry.get('capex_line_rows') or [], key_prefix='b5_single')
 
 # -------------------------------------------------------------------- 6. Forecast Back-up
 with tabs[5]:

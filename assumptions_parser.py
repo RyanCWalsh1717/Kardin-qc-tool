@@ -300,3 +300,103 @@ def check_leasing_assumptions_vs_bucket2(assumption_rows, occupancy_rows, buildi
             'Status': 'Open', 'Source Check': 'Leasing assumption suite not matched',
         })
     return findings
+
+
+# Kardin's Capex.pdf also includes Leasing Commissions (181200) and Tenant
+# Improvements (181400) - those are leasing-driven capital costs, already
+# tracked separately in bucket 5 via its own TIs.pdf/LCs.pdf, and are NOT
+# part of the 5-Year CapEx Plan's scope (building capital projects - HVAC,
+# roof, etc.). Confirmed against real Riverside Labs data: restricting to
+# just these two GLs made both buildings' totals tie out exactly to the
+# 5-Year Plan; including 181200/181400 made west20 off by ~$1.45M.
+CAPEX_BUILDING_IMPROVEMENT_GLS = {'154500', '171300'}
+
+
+def parse_capex_plan_portfolio_summary(xlsx_file, target_year):
+    """
+    GRP's "5-Year CapEx Plan" workbook - reads the "Portfolio Summary"
+    sheet's own pre-aggregated "PORTFOLIO TOTAL BY YEAR" section (already
+    summed across every project category - HVAC, Roof, Chiller, etc. - so
+    this doesn't need to re-derive it from the many per-category detail
+    blocks above it). Building names come from that section's own column
+    header row (e.g. '20 Riverside', '1 Riverside', 'Building 3'...).
+
+    Returns {building_name: annual_total} for the target year, or {} if
+    that year isn't found in the sheet (a 5-year plan only covers a fixed
+    window - e.g. 2026-2030 plus a "2030+" catch-all - so a year outside
+    that range legitimately has nothing to compare).
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(xlsx_file, data_only=True)
+    ws = wb['Portfolio Summary']
+
+    header_row = None
+    for r in range(1, ws.max_row + 1):
+        v = ws.cell(row=r, column=1).value
+        if isinstance(v, str) and v.strip().upper().startswith('PORTFOLIO TOTAL BY YEAR'):
+            header_row = r
+            break
+    if header_row is None:
+        return {}
+
+    # The building-name column layout is set by the sheet's main column
+    # header row (shared with the per-category blocks above) - find it by
+    # locating the 'Year' column header rather than assuming a fixed row.
+    col_header_row = None
+    for r in range(1, header_row):
+        vals = [str(ws.cell(row=r, column=c).value or '').strip().lower() for c in range(1, ws.max_column + 1)]
+        if 'year' in vals:
+            col_header_row = r
+            break
+    if col_header_row is None:
+        return {}
+    col_headers = [str(ws.cell(row=col_header_row, column=c).value or '').strip()
+                   for c in range(1, ws.max_column + 1)]
+    building_cols = {h: i + 1 for i, h in enumerate(col_headers)
+                     if h and h.lower() not in ('category', 'year', 'portfolio total', 'notes')}
+
+    for r in range(header_row + 1, ws.max_row + 1):
+        yr_val = ws.cell(row=r, column=1).value
+        if yr_val == target_year:
+            return {b: (ws.cell(row=r, column=c).value or 0) for b, c in building_cols.items()}
+    return {}
+
+
+def check_capex_plan_vs_bucket5(plan_totals, capex_line_rows, building_to_cost_center, target_year,
+                                 source_label, tolerance=1):
+    """
+    Compares GRP's 5-Year CapEx Plan's per-building annual total (for
+    target_year) against Kardin's actual Capex.pdf (bucket 5) - restricted
+    to CAPEX_BUILDING_IMPROVEMENT_GLS only, since Capex.pdf also carries
+    Leasing Commissions/Tenant Improvements which the 5-Year Plan doesn't
+    track (those are compared separately via bucket 5's own TIs.pdf/LCs.pdf
+    checks already).
+
+    plan_totals: parse_capex_plan_portfolio_summary() output for target_year.
+    capex_line_rows: expense_parser.parse_expense_detail() output for
+    Capex.pdf (bucket 5 already parses this for its own GL tie-out check).
+    building_to_cost_center: {building name as it appears in the CapEx Plan
+    (e.g. '20 Riverside'): Kardin cost center code (e.g. 'west20')}.
+    """
+    findings = []
+    for building, plan_total in plan_totals.items():
+        cost_center = building_to_cost_center.get(building)
+        if not cost_center:
+            continue
+        kardin_total = sum(
+            r['total'] for r in capex_line_rows
+            if (r.get('cost_center') or '').lower() == cost_center.lower() and r.get('gl') in CAPEX_BUILDING_IMPROVEMENT_GLS
+        )
+        if abs(kardin_total - plan_total) > tolerance:
+            findings.append({
+                'Report Section': '8. CapEx', 'GL Acct': '', 'Line Item': building,
+                'Budget Year': 'Next Year Budget', 'Priority': 'For Discussion',
+                'Comment': (
+                    f"GRP's 5-Year CapEx Plan budgets ${plan_total:,.0f} in building-improvement capital "
+                    f"({target_year}) for {building}, but Kardin's Capex.pdf (GL 154500 + 171300 only - "
+                    f"excludes Leasing Commissions/Tenant Improvements, tracked separately) totals "
+                    f"${kardin_total:,.0f} (diff ${kardin_total-plan_total:+,.0f}). Per {source_label}."
+                ),
+                'Status': 'Open', 'Source Check': 'CapEx Plan vs Kardin Capex.pdf',
+            })
+    return findings
