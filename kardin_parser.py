@@ -470,6 +470,75 @@ def check_multiple_cost_centers(summary_file, detail_file, monthly_file, expecte
     return findings
 
 
+def check_expense_categorization(expense_line_rows, source_label='Expense Detail', cost_center_filter=None):
+    """
+    Buckets Expense Detail's own vendor/allocation-level line items (bucket 4)
+    into Contingency / Contract / Misc-Other / No vendor note, and totals the
+    dollar amount in each. This is a best-effort READ on how much of the
+    budget is still soft vs. actually lined up with a vendor - confirmed with
+    Ryan as "a mixture", not a hard rule, so every result here is For
+    Discussion, not Must Fix. Requires bucket 4 (Expense Detail) to have
+    already been analyzed for this building - the vendor-level detail this
+    needs only exists there, not in bucket 1's own GL-level Budget Detail.
+
+    Classification (first match wins, since real descriptions can match more
+    than one signal - see real Lex Labs examples in each comment):
+      1. Description mentions "conting..." (e.g. "Contingency - parking",
+         "HVAC repairs contingency") -> Contingency
+      2. GL account label itself says "misc"/"other" (e.g. "Admin-
+         Miscellaneous") -> Misc/Other - independent of what's in the
+         description, since this is a property of the GL account, not the vendor
+      3. Description is non-blank (e.g. "Cintas - First Aid Kits",
+         "Exterior landscaping contract") -> Contract (vendor/note listed).
+         NOTE: this is a proxy, not a verified vendor contract - some
+         descriptions are generic service categories, not company names.
+      4. Description is blank -> No vendor/note on file (needs review)
+
+    cost_center_filter: optional - restrict to one building's rows (Expense
+    Detail is usually one portfolio-wide export, not per-building) via the
+    row's own 'cost_center' tag, e.g. 'lexlab-1'.
+    source_label: the actual uploaded filename, so the finding is traceable
+    back to which file this came from.
+    """
+    rows = expense_line_rows
+    if cost_center_filter:
+        rows = [r for r in rows if (r.get('cost_center') or '').lower() == cost_center_filter.lower()]
+    if not rows:
+        return []
+
+    buckets = {'Contingency': [], 'Misc/Other': [], 'Contract (vendor/note listed)': [], 'No vendor/note on file': []}
+    for r in rows:
+        desc = (r.get('description') or '').strip()
+        label = (r.get('gl_label') or '').lower()
+        if 'conting' in desc.lower():
+            buckets['Contingency'].append(r)
+        elif 'misc' in label or 'other' in label:
+            buckets['Misc/Other'].append(r)
+        elif desc:
+            buckets['Contract (vendor/note listed)'].append(r)
+        else:
+            buckets['No vendor/note on file'].append(r)
+
+    total_all = sum(r['total'] for r in rows)
+    findings = []
+    for cat, cat_rows in buckets.items():
+        amt = sum(r['total'] for r in cat_rows)
+        pct = (amt / total_all * 100) if total_all else 0
+        gl_list = sorted({f"{r['gl']} {r['gl_label']}" for r in cat_rows if r.get('gl')})
+        gl_note = f" GL lines: {', '.join(gl_list[:8])}" + ('...' if len(gl_list) > 8 else '') if gl_list else ''
+        findings.append({
+            'Report Section': '1. General', 'GL Acct': '', 'Line Item': cat,
+            'Budget Year': 'Next Year Budget', 'Priority': 'For Discussion',
+            'Comment': (
+                f"{cat}: {len(cat_rows)} line item(s) totaling ${amt:,.0f} ({pct:.1f}% of "
+                f"${total_all:,.0f} total). Per {source_label}.{gl_note} This is a best-effort "
+                "read (vendor-listed = contract is a heuristic, not verified), not a rule violation."
+            ),
+            'Status': 'Open', 'Source Check': 'Budget categorization (Contingency/Contract/Misc)',
+        })
+    return findings
+
+
 CHECKLIST = [
     {'name': 'Required files provided', 'source_check': 'Missing file', 'requires': []},
     {'name': 'Cost center scope correct',

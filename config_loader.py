@@ -53,6 +53,19 @@ def cost_center_for_tag(cfg, tag):
     return None
 
 
+def cost_center_for_name(cfg, name):
+    """The cost_centers entry (dict: tag/code/name) whose display 'name'
+    matches, e.g. resolving the free-text Building name box ('20 Riverside')
+    back to its Kardin cost-center code ('west20') for a cross-bucket check
+    that needs to filter another bucket's rows to just this building."""
+    if not cfg or not name:
+        return None
+    for cc in cfg.get('cost_centers', []):
+        if cc.get('name') == name:
+            return cc
+    return None
+
+
 def generate_config_yaml(property_name, cost_centers):
     """cost_centers: [{'tag': str-or-None, 'code': str, 'name': str}, ...] -
     typically built from kardin_parser.parse_cost_center_roster (Kardin's own

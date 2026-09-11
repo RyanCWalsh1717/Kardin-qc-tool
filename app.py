@@ -48,6 +48,32 @@ def show_checklist(checklist):
         st.markdown(label)
 
 
+def show_expense_categorization(building_key, cost_center_code=None):
+    """Cross-bucket enrichment shown on Bucket 1: how much of the budget is
+    Contingency / Contract (vendor-backed) / Misc-Other / no vendor note on
+    file, using Bucket 4's (Expense Detail) vendor-level line items - the
+    only place that detail exists. Silently does nothing if bucket 4 hasn't
+    been analyzed yet for this building (lookup_bucket also falls back to an
+    "(All Buildings)" run of bucket 4 if that's how it was run)."""
+    b4_entry = lookup_bucket(4, building_key)
+    if not b4_entry:
+        return
+    line_rows = b4_entry['results'].get('line_rows')
+    if not line_rows:
+        return
+    source_label = b4_entry.get('expense_detail_name', 'Expense Detail')
+    cat_findings = kardin_parser.check_expense_categorization(
+        line_rows, source_label=source_label, cost_center_filter=cost_center_code)
+    if not cat_findings:
+        return
+    st.subheader("Budget Categorization (from Expense Detail)")
+    st.caption("Best-effort read on how much of the budget is Contingency, vendor-backed (Contract), "
+               "tagged Misc/Other by GL account, or has no vendor/note on file - a heuristic to help "
+               "review, not a rule violation.")
+    for f in cat_findings:
+        st.markdown(f"- {f['Comment']}")
+
+
 def show_stats(stats):
     st.json(stats, expanded=False)
 
@@ -328,6 +354,9 @@ def batch_runner(all_files, slot_rules, key_prefix, bucket_num, run_fn, store_ex
                     show_checklist(results.get('checklist'))
                     show_stats(results['stats'])
                     show_findings(results['findings'])
+                    if bucket_num == 1:
+                        cc = config_loader.cost_center_for_tag(property_cfg, t)
+                        show_expense_categorization(bname, cost_center_code=cc['code'] if cc else None)
             except Exception:
                 st.error(f"B{t} ('{bname}') failed to parse:")
                 st.code(traceback.format_exc())
@@ -444,6 +473,8 @@ with tabs[0]:
         show_checklist(entry['results'].get('checklist'))
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
+        _cc = config_loader.cost_center_for_name(st.session_state.get('property_cfg'), building)
+        show_expense_categorization(building, cost_center_code=_cc['code'] if _cc else None)
 
     b1_slot_rules = {
         'Budget Analysis Summary': [(['summary'], [])],
@@ -575,7 +606,10 @@ with tabs[3]:
                 mgmt_fee_20r_name=mgmt_fee_a_pdf.name if mgmt_fee_a_pdf else 'Mgmt Fee Calc #1',
                 mgmt_fee_1r_name=mgmt_fee_b_pdf.name if mgmt_fee_b_pdf else 'Mgmt Fee Calc #2',
             )
-            st.session_state.bucket_results[(4, eff_building)] = {'results': results}
+            st.session_state.bucket_results[(4, eff_building)] = {
+                'results': results,
+                'expense_detail_name': expense_detail_pdf.name if expense_detail_pdf else 'Expense Detail',
+            }
             st.success(f"Parsed - {len(results['findings'])} finding(s).")
         except Exception:
             report_error()
