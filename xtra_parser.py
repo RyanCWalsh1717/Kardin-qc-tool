@@ -189,16 +189,32 @@ def check_cross_tie_vs_occupancy(schedule, occupancy_rows):
     return findings
 
 
+CHECKLIST = [
+    {'name': 'Required files provided', 'source_check': 'Missing file', 'requires': []},
+    {'name': 'Expiration % matches its own RSF/building RSF',
+     'source_check': 'Lease Expiration % mismatch', 'requires': ['lease_exp']},
+    {'name': "Cross-ties to Bucket 2's Occupancy Summary",
+     'source_check': ['Lease Expiration vs Occupancy Summary roster mismatch',
+                       'Lease Expiration date mismatch', 'Lease Expiration RSF mismatch'],
+     'requires': ['lease_exp', 'bucket2']},
+]
+
+
 def run(lease_expiration_pdf, occupancy_rows=None):
     schedule = parse_lease_expiration_schedule(lease_expiration_pdf)
 
-    from kardin_parser import missing_file_finding
+    from kardin_parser import missing_file_finding, build_checklist
     findings = []
+    unavailable = set()
     if lease_expiration_pdf is None:
         findings.append(missing_file_finding('Lease Expiration Schedule'))
+        unavailable.add('lease_exp')
+    if occupancy_rows is None:
+        unavailable.add('bucket2')
     findings += check_percent_consistency(schedule)
     if occupancy_rows is not None:
         findings += check_cross_tie_vs_occupancy(schedule, occupancy_rows)
 
     stats = {'suites': len(schedule['suites']), 'years': len(schedule['years'])}
-    return {'schedule': schedule, 'findings': findings, 'stats': stats}
+    checklist = build_checklist(CHECKLIST, findings, unavailable)
+    return {'schedule': schedule, 'findings': findings, 'stats': stats, 'checklist': checklist}

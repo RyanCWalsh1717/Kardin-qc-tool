@@ -122,19 +122,40 @@ def note_prior_year_installments(suites, report_label):
     return findings
 
 
+CHECKLIST = [
+    {'name': 'Required files provided', 'source_check': 'Missing file', 'requires': []},
+    {'name': 'TI payment schedule ties to 2027 total',
+     'source_check': 'Tenant Improvements payment schedule mismatch', 'requires': ['tis']},
+    {'name': 'LC payment schedule ties to 2027 total',
+     'source_check': 'Leasing Commissions payment schedule mismatch', 'requires': ['lcs']},
+    {'name': 'Prior-year TI/LC installments explained (informational)',
+     'source_check': 'Prior-year TI/LC installment (informational)', 'requires': ['tis', 'lcs']},
+    {'name': "Capex GL pages sum to their own totals",
+     'source_check': 'GL page internal sum mismatch', 'requires': ['capex']},
+    {'name': "Capex ties to Bucket 1's Budget Detail",
+     'source_check': 'Expense Detail vs Budget Analysis Detail mismatch', 'requires': ['capex', 'bucket1']},
+]
+
+
 def run(tis_pdf, lcs_pdf, capex_line_rows=None, capex_totals_rows=None, bucket1_west20_detail_rows=None,
         capex_pdf_missing=False):
     ti_suites = parse_ti_lc_report(tis_pdf)
     lc_suites = parse_ti_lc_report(lcs_pdf)
 
-    from kardin_parser import missing_file_finding
+    from kardin_parser import missing_file_finding, build_checklist
     findings = []
+    unavailable = set()
     if tis_pdf is None:
         findings.append(missing_file_finding('TIs'))
+        unavailable.add('tis')
     if lcs_pdf is None:
         findings.append(missing_file_finding('LCs'))
+        unavailable.add('lcs')
     if capex_pdf_missing:
         findings.append(missing_file_finding('Capex'))
+        unavailable.add('capex')
+    if bucket1_west20_detail_rows is None:
+        unavailable.add('bucket1')
     findings += check_ti_lc_schedule_consistency(ti_suites, 'Tenant Improvements')
     findings += check_ti_lc_schedule_consistency(lc_suites, 'Leasing Commissions')
     findings += note_prior_year_installments(ti_suites, 'Tenant Improvements')
@@ -147,4 +168,6 @@ def run(tis_pdf, lcs_pdf, capex_line_rows=None, capex_totals_rows=None, bucket1_
             findings += ep.check_west20_ties_to_bucket1_detail(capex_line_rows, bucket1_west20_detail_rows)
 
     stats = {'ti_suites': len(ti_suites), 'lc_suites': len(lc_suites)}
-    return {'ti_suites': ti_suites, 'lc_suites': lc_suites, 'findings': findings, 'stats': stats}
+    checklist = build_checklist(CHECKLIST, findings, unavailable)
+    return {'ti_suites': ti_suites, 'lc_suites': lc_suites, 'findings': findings, 'stats': stats,
+            'checklist': checklist}

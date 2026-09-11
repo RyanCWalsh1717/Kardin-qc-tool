@@ -80,6 +80,49 @@ def extract_pages_text(pdf_file):
     return pages
 
 
+def build_checklist(checklist_def, findings, unavailable):
+    """
+    Structured pass/flag/skip checklist for a bucket's Run Analysis result -
+    same idea as ga-automation's named CHECK_1..CHECK_7 with a status each,
+    rather than just a flat pile of findings. Computed AFTER the fact from
+    the findings a bucket's run() already produced, so it never duplicates
+    or drifts from what the checks actually did.
+
+    checklist_def: [{'name': display name shown to the user,
+                     'source_check': the exact 'Source Check' string(s) this
+                                     check writes onto its findings (str or
+                                     list of str - some checks are reused
+                                     across buckets under the same name),
+                     'requires': list of requirement-labels this check needs
+                                 to mean anything (e.g. ['detail']) - must
+                                 match labels passed via `unavailable`}]
+    findings: the bucket's own findings list.
+    unavailable: set/list of requirement-labels that were NOT satisfied this
+                 run (e.g. a missing file) - any check requiring one of
+                 these is marked 'Skipped' instead of 'Passed'/'Flagged'.
+
+    Returns [{'name', 'status': 'Passed'|'Flagged'|'Skipped', 'count'}].
+    """
+    unavailable = set(unavailable or [])
+    by_check = {}
+    for f in findings:
+        by_check.setdefault(f['Source Check'], []).append(f)
+
+    rows = []
+    for item in checklist_def:
+        source_checks = item['source_check']
+        if isinstance(source_checks, str):
+            source_checks = [source_checks]
+        matched = [f for sc in source_checks for f in by_check.get(sc, [])]
+        if set(item.get('requires', [])) & unavailable:
+            rows.append({'name': item['name'], 'status': 'Skipped', 'count': 0})
+        elif matched:
+            rows.append({'name': item['name'], 'status': 'Flagged', 'count': len(matched)})
+        else:
+            rows.append({'name': item['name'], 'status': 'Passed', 'count': 0})
+    return rows
+
+
 def missing_file_finding(label):
     """Standard 'file not provided' finding. app.py lets Run Analysis proceed
     even when a required slot is empty (flag it, don't block the whole run) -
@@ -427,6 +470,21 @@ def check_multiple_cost_centers(summary_file, detail_file, monthly_file, expecte
     return findings
 
 
+CHECKLIST = [
+    {'name': 'Required files provided', 'source_check': 'Missing file', 'requires': []},
+    {'name': 'Cost center scope correct',
+     'source_check': ['Multiple cost centers in single-building report', 'Cost center mismatch'], 'requires': []},
+    {'name': 'Variance explanations present (SOP $2,500/5%)',
+     'source_check': 'Missing variance explanation', 'requires': ['detail']},
+    {'name': 'Electric recovery ties to expense',
+     'source_check': 'Electric recovery tie-out', 'requires': ['monthly']},
+    {'name': 'Detail vs Monthly Detail totals agree',
+     'source_check': 'Detail vs Monthly total mismatch', 'requires': ['detail', 'monthly']},
+    {'name': 'Revision numbers consistent across files',
+     'source_check': 'Revision mismatch', 'requires': []},
+]
+
+
 def run(summary_file, detail_file, monthly_file, expected_cost_center=None):
     """Parse all three files and run all bucket-1 checks. Files can be paths or
     Streamlit UploadedFile objects (each is read multiple times, so callers
@@ -439,12 +497,16 @@ def run(summary_file, detail_file, monthly_file, expected_cost_center=None):
     monthly_rows = parse_monthly_detail(monthly_file)
 
     findings = []
+    unavailable = set()
     if summary_file is None:
         findings.append(missing_file_finding('Budget Analysis Summary'))
+        unavailable.add('summary')
     if detail_file is None:
         findings.append(missing_file_finding('Budget Analysis Detail'))
+        unavailable.add('detail')
     if monthly_file is None:
         findings.append(missing_file_finding('Monthly Budget Detail'))
+        unavailable.add('monthly')
     findings += check_multiple_cost_centers(summary_file, detail_file, monthly_file, expected_cost_center)
     findings += check_missing_explanations(detail_rows)
     findings += check_electric_tie_out(monthly_rows)
@@ -458,5 +520,6 @@ def run(summary_file, detail_file, monthly_file, expected_cost_center=None):
         'monthly_rows': len(monthly_rows),
         'monthly_gl_rows': len([r for r in monthly_rows if r['gl']]),
     }
+    checklist = build_checklist(CHECKLIST, findings, unavailable)
     return {'summary_rows': summary_rows, 'detail_rows': detail_rows,
-            'monthly_rows': monthly_rows, 'findings': findings, 'stats': stats}
+            'monthly_rows': monthly_rows, 'findings': findings, 'stats': stats, 'checklist': checklist}

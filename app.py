@@ -28,6 +28,26 @@ if 'bucket_results' not in st.session_state:
     st.session_state.bucket_results = {}  # (bucket_num, building) -> dict
 
 
+STATUS_ICON = {'Passed': '✅', 'Flagged': '⚠️', 'Skipped': '⏭️'}
+
+
+def show_checklist(checklist):
+    """Named rules + pass/flag/skip status for this bucket's run - same idea
+    as ga-automation's QC engine (CHECK_1..CHECK_7 with a status each)
+    instead of just a flat pile of findings, so it's immediately clear which
+    specific checks ran clean, which flagged something, and which couldn't
+    run at all because a required file/cross-bucket input was missing."""
+    if not checklist:
+        return
+    st.subheader("QC Checklist")
+    for c in checklist:
+        icon = STATUS_ICON.get(c['status'], '•')
+        label = f"{icon} **{c['name']}** - {c['status']}"
+        if c['count']:
+            label += f" ({c['count']})"
+        st.markdown(label)
+
+
 def show_stats(stats):
     st.json(stats, expanded=False)
 
@@ -305,6 +325,7 @@ def batch_runner(all_files, slot_rules, key_prefix, bucket_num, run_fn, store_ex
                     entry.update(store_extra(picked))
                 st.session_state.bucket_results[(bucket_num, bname)] = entry
                 with st.expander(f"B{t} - '{bname}': {len(results['findings'])} finding(s)"):
+                    show_checklist(results.get('checklist'))
                     show_stats(results['stats'])
                     show_findings(results['findings'])
             except Exception:
@@ -420,6 +441,7 @@ with tabs[0]:
 
     entry = st.session_state.bucket_results.get((1, building))
     if entry:
+        show_checklist(entry['results'].get('checklist'))
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
 
@@ -479,6 +501,7 @@ with tabs[1]:
 
     entry = st.session_state.bucket_results.get((2, eff_building))
     if entry:
+        show_checklist(entry['results'].get('checklist'))
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
 
@@ -514,6 +537,7 @@ with tabs[2]:
 
     entry = st.session_state.bucket_results.get((3, eff_building))
     if entry:
+        show_checklist(entry['results'].get('checklist'))
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
 
@@ -558,6 +582,7 @@ with tabs[3]:
 
     entry = st.session_state.bucket_results.get((4, eff_building))
     if entry:
+        show_checklist(entry['results'].get('checklist'))
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
 
@@ -598,6 +623,7 @@ with tabs[4]:
 
     entry = st.session_state.bucket_results.get((5, eff_building))
     if entry:
+        show_checklist(entry['results'].get('checklist'))
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
 
@@ -633,6 +659,7 @@ with tabs[5]:
 
     entry = st.session_state.bucket_results.get((6, building))
     if entry:
+        show_checklist(entry['results'].get('checklist'))
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
 
@@ -680,6 +707,7 @@ with tabs[6]:
 
     entry = st.session_state.bucket_results.get((7, eff_building))
     if entry:
+        show_checklist(entry['results'].get('checklist'))
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
 

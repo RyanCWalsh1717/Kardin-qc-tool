@@ -366,22 +366,38 @@ def check_fixed_factor_vs_gross_up_schedule(fixed_factor_rows, gu_blocks, tolera
     return findings
 
 
+CHECKLIST = [
+    {'name': 'Required files provided', 'source_check': 'Missing file', 'requires': []},
+    {'name': 'Gross Up Schedule export complete',
+     'source_check': 'Incomplete Gross Up Schedule export', 'requires': ['gross_up']},
+    {'name': 'Recovery Calc Est ties to Recovery Monthly',
+     'source_check': 'Recovery Calc Est vs Monthly mismatch', 'requires': ['calc_est', 'monthly']},
+    {'name': 'Fixed Factor Calcs workpaper matches Kardin',
+     'source_check': 'Fixed Factor Calcs stale vs Kardin', 'requires': ['fixed_factor', 'gross_up']},
+]
+
+
 def run(recovery_calc_est_pdf, recovery_monthly_pdf, gross_up_schedule_pdf, fixed_factor_xlsx):
     monthly_rows = parse_recovery_monthly(recovery_monthly_pdf)
     detail_rows, summary_rows = parse_recovery_calc_est(recovery_calc_est_pdf)
     gu_blocks, gu_group_totals, gu_page_info = parse_gross_up_schedule(gross_up_schedule_pdf)
     ff_rows = parse_fixed_factor_workbook(fixed_factor_xlsx)
 
-    from kardin_parser import missing_file_finding
+    from kardin_parser import missing_file_finding, build_checklist
     findings = []
+    unavailable = set()
     if recovery_calc_est_pdf is None:
         findings.append(missing_file_finding('Recovery Calc Est'))
+        unavailable.add('calc_est')
     if recovery_monthly_pdf is None:
         findings.append(missing_file_finding('Recovery Monthly'))
+        unavailable.add('monthly')
     if gross_up_schedule_pdf is None:
         findings.append(missing_file_finding('Gross Up Schedule'))
+        unavailable.add('gross_up')
     if fixed_factor_xlsx is None:
         findings.append(missing_file_finding('Fixed Factor Calcs (.xlsx)'))
+        unavailable.add('fixed_factor')
     findings += check_gross_up_schedule_completeness(gu_page_info)
     findings += check_calc_est_vs_monthly_totals(summary_rows, monthly_rows)
     findings += check_fixed_factor_vs_gross_up_schedule(ff_rows, gu_blocks)
@@ -394,8 +410,9 @@ def run(recovery_calc_est_pdf, recovery_monthly_pdf, gross_up_schedule_pdf, fixe
         'gross_up_page_info': gu_page_info,
         'fixed_factor_rows': len(ff_rows),
     }
+    checklist = build_checklist(CHECKLIST, findings, unavailable)
     return {
         'monthly_rows': monthly_rows, 'detail_rows': detail_rows, 'summary_rows': summary_rows,
         'gu_blocks': gu_blocks, 'gu_group_totals': gu_group_totals, 'ff_rows': ff_rows,
-        'findings': findings, 'stats': stats,
+        'findings': findings, 'stats': stats, 'checklist': checklist,
     }

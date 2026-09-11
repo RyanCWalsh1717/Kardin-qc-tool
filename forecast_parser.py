@@ -184,16 +184,34 @@ def check_refore_drift_vs_bucket1(bucket6_detail_rows, bucket1_detail_rows, rev6
     return findings
 
 
+CHECKLIST = [
+    {'name': 'Required files provided', 'source_check': 'Missing file', 'requires': []},
+    {'name': 'Variance explanations present (SOP $2,500/5%)',
+     'source_check': 'Missing variance explanation', 'requires': ['detail']},
+    {'name': 'Electric recovery ties to expense',
+     'source_check': 'Electric recovery tie-out', 'requires': ['monthly']},
+    {'name': 'Detail vs Monthly Detail totals agree',
+     'source_check': 'Detail vs Monthly total mismatch', 'requires': ['detail', 'monthly']},
+    {'name': "2026 Reforecast hasn't drifted from Bucket 1",
+     'source_check': 'Reforecast drift vs bucket 1', 'requires': ['detail', 'bucket1']},
+]
+
+
 def run(detail_pdf, monthly_pdf, bucket1_detail_rows=None, bucket1_detail_pdf=None):
     detail_rows = parse_2way_detail(detail_pdf)
     monthly_rows = parse_monthly_detail(monthly_pdf)
 
-    from kardin_parser import missing_file_finding
+    from kardin_parser import missing_file_finding, build_checklist
     findings = []
+    unavailable = set()
     if detail_pdf is None:
         findings.append(missing_file_finding('2026B v 2026F Detail'))
+        unavailable.add('detail')
     if monthly_pdf is None:
         findings.append(missing_file_finding('2026F Monthly Detail'))
+        unavailable.add('monthly')
+    if bucket1_detail_rows is None:
+        unavailable.add('bucket1')
     findings += check_missing_explanations(detail_rows)
     findings += check_electric_tie_out(monthly_rows)
     findings += check_detail_vs_monthly_totals(detail_rows, monthly_rows)
@@ -208,4 +226,6 @@ def run(detail_pdf, monthly_pdf, bucket1_detail_rows=None, bucket1_detail_pdf=No
         'detail_gl_rows': len([r for r in detail_rows if r['gl']]),
         'monthly_rows': len(monthly_rows),
     }
-    return {'detail_rows': detail_rows, 'monthly_rows': monthly_rows, 'findings': findings, 'stats': stats}
+    checklist = build_checklist(CHECKLIST, findings, unavailable)
+    return {'detail_rows': detail_rows, 'monthly_rows': monthly_rows, 'findings': findings, 'stats': stats,
+            'checklist': checklist}

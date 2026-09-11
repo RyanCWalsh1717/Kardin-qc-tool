@@ -497,6 +497,21 @@ def check_suite_roster_consistency(occupancy_rows, stacking_rows, rent_roll_rows
     return findings
 
 
+CHECKLIST = [
+    {'name': 'Required files provided', 'source_check': 'Missing file', 'requires': []},
+    {'name': 'Vacant suites have leasing assumptions',
+     'source_check': 'Unmodeled vacant suites', 'requires': ['occupancy']},
+    {'name': 'Stacking Plan agrees with Occupancy Summary',
+     'source_check': 'Stacking Plan vs Occupancy Summary mismatch', 'requires': ['occupancy', 'stacking']},
+    {'name': 'Free Rent sums to its own reported total',
+     'source_check': 'Free rent internal sum mismatch', 'requires': ['free_rent']},
+    {'name': 'Free Rent never exceeds gross scheduled rent',
+     'source_check': 'Free rent exceeds gross rent', 'requires': ['free_rent', 'rent_lab']},
+    {'name': 'Suite roster consistent (Occupancy/Stacking/Rent Roll)',
+     'source_check': 'Suite roster inconsistency', 'requires': ['occupancy', 'stacking', 'rent_roll']},
+]
+
+
 def run(free_rent_pdf, rent_lab_pdfs, occupancy_pdf, rent_roll_pdfs, stacking_plan_pdf):
     """rent_lab_pdfs / rent_roll_pdfs: a file or a list of files - see
     parse_rent_lab_monthly_multi / parse_rent_roll_roster_multi."""
@@ -511,18 +526,24 @@ def run(free_rent_pdf, rent_lab_pdfs, occupancy_pdf, rent_roll_pdfs, stacking_pl
     rent_roll_rows = parse_rent_roll_roster_multi(rent_roll_pdfs)
     stacking_rows = parse_stacking_plan(stacking_plan_pdf)
 
-    from kardin_parser import missing_file_finding
+    from kardin_parser import missing_file_finding, build_checklist
     findings = []
+    unavailable = set()
     if free_rent_pdf is None:
         findings.append(missing_file_finding('Free Rent'))
+        unavailable.add('free_rent')
     if not rent_lab_pdfs:
         findings.append(missing_file_finding('Base Rent'))
+        unavailable.add('rent_lab')
     if occupancy_pdf is None:
         findings.append(missing_file_finding('Occupancy Summary'))
+        unavailable.add('occupancy')
     if not rent_roll_pdfs:
         findings.append(missing_file_finding('Rent Roll'))
+        unavailable.add('rent_roll')
     if stacking_plan_pdf is None:
         findings.append(missing_file_finding('Stacking Plan'))
+        unavailable.add('stacking')
     findings += check_unmodeled_vacant_suites(occupancy_rows)
     findings += check_stacking_vs_occupancy_consistency(occupancy_rows, stacking_rows)
     findings += check_free_rent_internal_consistency(free_rent_rows)
@@ -537,8 +558,9 @@ def run(free_rent_pdf, rent_lab_pdfs, occupancy_pdf, rent_roll_pdfs, stacking_pl
         'rent_roll_rows': len(rent_roll_rows),
         'stacking_rows': len(stacking_rows),
     }
+    checklist = build_checklist(CHECKLIST, findings, unavailable)
     return {
         'free_rent_rows': free_rent_rows, 'rent_lab_rows': rent_lab_rows,
         'occupancy_rows': occupancy_rows, 'rent_roll_rows': rent_roll_rows,
-        'stacking_rows': stacking_rows, 'findings': findings, 'stats': stats,
+        'stacking_rows': stacking_rows, 'findings': findings, 'stats': stats, 'checklist': checklist,
     }

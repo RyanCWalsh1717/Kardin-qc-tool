@@ -274,6 +274,19 @@ def check_west20_ties_to_bucket1_detail(line_rows, bucket1_detail_rows, toleranc
     return findings
 
 
+CHECKLIST = [
+    {'name': 'Required files provided', 'source_check': 'Missing file', 'requires': []},
+    {'name': "Expense Detail's GL pages sum to their own totals",
+     'source_check': 'GL page internal sum mismatch', 'requires': ['expense_detail']},
+    {'name': 'Mgmt Fee Calc duplicate-file note',
+     'source_check': 'Duplicate Mgmt Fee Calc files', 'requires': ['mgmt_fee_1r']},
+    {'name': 'Management fee ties to Mgmt Fee Calc',
+     'source_check': 'Management fee tie-out', 'requires': ['expense_detail', 'mgmt_fee_20r']},
+    {'name': "Expense Detail ties to Bucket 1's Budget Detail",
+     'source_check': 'Expense Detail vs Budget Analysis Detail mismatch', 'requires': ['expense_detail', 'bucket1']},
+]
+
+
 def run(expense_detail_pdf, mgmt_fee_20r_pdf, mgmt_fee_1r_pdf=None, bucket1_west20_detail_rows=None,
         mgmt_fee_20r_name='Mgmt Fee Calc #1', mgmt_fee_1r_name='Mgmt Fee Calc #2'):
     """mgmt_fee_1r_pdf is optional - some PMs only send one Mgmt Fee Calc export
@@ -285,12 +298,19 @@ def run(expense_detail_pdf, mgmt_fee_20r_pdf, mgmt_fee_1r_pdf=None, bucket1_west
     mgmt_fee_20r = parse_mgmt_fee_calc(mgmt_fee_20r_pdf)
     mgmt_fee_1r = parse_mgmt_fee_calc(mgmt_fee_1r_pdf) if mgmt_fee_1r_pdf is not None else []
 
-    from kardin_parser import missing_file_finding
+    from kardin_parser import missing_file_finding, build_checklist
     findings = []
+    unavailable = set()
     if expense_detail_pdf is None:
         findings.append(missing_file_finding('Expense Detail'))
+        unavailable.add('expense_detail')
     if mgmt_fee_20r_pdf is None:
         findings.append(missing_file_finding('Mgmt Fee Calc - File 1'))
+        unavailable.add('mgmt_fee_20r')
+    if mgmt_fee_1r_pdf is None:
+        unavailable.add('mgmt_fee_1r')  # optional by design - no missing-file finding for this one
+    if bucket1_west20_detail_rows is None:
+        unavailable.add('bucket1')
     findings += check_gl_totals_internal_consistency(line_rows, totals_rows)
     if mgmt_fee_1r_pdf is not None:
         findings += check_mgmt_fee_files_are_duplicates(
@@ -305,8 +325,9 @@ def run(expense_detail_pdf, mgmt_fee_20r_pdf, mgmt_fee_1r_pdf=None, bucket1_west
         'mgmt_fee_20r_rows': len(mgmt_fee_20r),
         'mgmt_fee_1r_rows': len(mgmt_fee_1r),
     }
+    checklist = build_checklist(CHECKLIST, findings, unavailable)
     return {
         'line_rows': line_rows, 'totals_rows': totals_rows,
         'mgmt_fee_20r': mgmt_fee_20r, 'mgmt_fee_1r': mgmt_fee_1r,
-        'findings': findings, 'stats': stats,
+        'findings': findings, 'stats': stats, 'checklist': checklist,
     }
