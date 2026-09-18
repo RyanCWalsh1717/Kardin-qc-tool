@@ -258,6 +258,71 @@ def show_capex_plan_check(capex_line_rows, key_prefix):
             st.markdown(f"- {f['Comment']}")
 
 
+def show_expense_yoy_comparison(current_line_rows, key_prefix):
+    """Optional: compare this year's Expense Detail against last year's -
+    what changed GL by GL, whether Contingency/Contract/Misc/No-vendor-note
+    category totals shifted, and which specific lines are driving the
+    overall change (with the current year's own vendor-level detail
+    attached to the top drivers, for the "why")."""
+    with st.expander("Compare to Prior Year Expense Detail (optional)"):
+        st.caption("Upload last year's Expense Detail (.pdf) for this same property to see what changed, "
+                   "whether Contingency stayed flat, and what's driving any increase.")
+        prior_pdf = st.file_uploader("Prior Year Expense Detail (.pdf)", type="pdf", key=f'{key_prefix}_yoy_upload')
+        if not prior_pdf:
+            return
+        property_cfg = st.session_state.get('property_cfg')
+        cc_list = [cc for cc in (property_cfg or {}).get('cost_centers', []) if cc.get('name') and cc.get('code')]
+        cc_options = ['(All buildings combined)'] + [cc['name'] for cc in cc_list]
+        chosen_cc = st.selectbox("Compare for which building?", cc_options, key=f'{key_prefix}_yoy_cc')
+        cost_center_code = None
+        if chosen_cc != cc_options[0]:
+            match = next((cc for cc in cc_list if cc['name'] == chosen_cc), None)
+            cost_center_code = match['code'] if match else None
+
+        try:
+            prior_line_rows, _ = expense_parser.parse_expense_detail(prior_pdf)
+        except Exception:
+            report_error()
+            return
+        if not prior_line_rows:
+            st.warning("Couldn't find any line items in that file - it may be an incomplete/broken export "
+                       "(e.g. every page shows only a loading placeholder instead of real report content - "
+                       "check the source PDF and re-export if so).")
+            return
+
+        cmp = kardin_parser.compare_expense_detail_yoy(current_line_rows, prior_line_rows,
+                                                        cost_center_filter=cost_center_code)
+        st.metric("Total", f"${cmp['total_current']:,.0f}",
+                  delta=f"${cmp['total_delta']:+,.0f} ({cmp['total_pct_change']:+.1f}%)")
+
+        st.subheader("By category")
+        st.caption("Same Contingency/Contract/Misc/No-vendor-note rule as the Budget Categorization panel "
+                   "on Bucket 1 - shows whether each shifted year over year.")
+        cat_df = pd.DataFrame([{
+            'Category': c['category'], 'Prior $': c['prior'], 'Current $': c['current'],
+            'Delta $': c['delta'], 'Delta %': round(c['pct_change'], 1),
+        } for c in cmp['category_comparison']])
+        st.dataframe(cat_df, use_container_width=True, hide_index=True)
+
+        st.subheader("Top drivers of the change")
+        st.caption("Ranked by absolute $ delta - the GL lines doing the most to explain the total change.")
+        top_gls = cmp['gl_comparison'][:15]
+        gl_df = pd.DataFrame([{
+            'GL': g['gl'], 'Label': g['label'], 'Prior $': g['prior'], 'Current $': g['current'],
+            'Delta $': g['delta'], 'Delta %': round(g['pct_change'], 1),
+            'Flag': 'NEW' if g['is_new'] else ('DROPPED' if g['is_dropped'] else ''),
+        } for g in top_gls])
+        st.dataframe(gl_df, use_container_width=True, hide_index=True)
+
+        with st.expander("Line-item detail behind the top 5 drivers (this year)"):
+            for g in top_gls[:5]:
+                if not g['current_line_items']:
+                    continue
+                st.markdown(f"**{g['gl']} {g['label']}** (delta ${g['delta']:+,.0f})")
+                for li in g['current_line_items']:
+                    st.markdown(f"- {li['description'] or '(no description)'}: ${li['total']:,.0f}")
+
+
 def show_stats(stats):
     st.json(stats, expanded=False)
 
@@ -808,6 +873,7 @@ with tabs[3]:
         show_checklist(entry['results'].get('checklist'))
         show_stats(entry['results']['stats'])
         show_findings(entry['results']['findings'])
+        show_expense_yoy_comparison(entry['results']['line_rows'], key_prefix='b4_single')
 
 # ------------------------------------------------------------------------ 5. CapEx Back-up
 with tabs[4]:

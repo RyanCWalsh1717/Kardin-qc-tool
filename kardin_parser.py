@@ -470,6 +470,24 @@ def check_multiple_cost_centers(summary_file, detail_file, monthly_file, expecte
     return findings
 
 
+def classify_expense_line(row):
+    """One Expense Detail line item (bucket 4) -> 'Contingency' /
+    'Misc/Other' / 'Contract (vendor/note listed)' / 'No vendor/note on
+    file'. Factored out of check_expense_categorization so the same rule is
+    reused by compare_expense_detail_yoy (year-over-year comparison) -
+    see check_expense_categorization's docstring for the full rationale of
+    each rule and its known limits."""
+    desc = (row.get('description') or '').strip()
+    label = (row.get('gl_label') or '').lower()
+    if 'conting' in desc.lower():
+        return 'Contingency'
+    if 'misc' in label or 'other' in label:
+        return 'Misc/Other'
+    if desc:
+        return 'Contract (vendor/note listed)'
+    return 'No vendor/note on file'
+
+
 def check_expense_categorization(expense_line_rows, source_label='Expense Detail', cost_center_filter=None):
     """
     Buckets Expense Detail's own vendor/allocation-level line items (bucket 4)
@@ -508,16 +526,7 @@ def check_expense_categorization(expense_line_rows, source_label='Expense Detail
 
     buckets = {'Contingency': [], 'Misc/Other': [], 'Contract (vendor/note listed)': [], 'No vendor/note on file': []}
     for r in rows:
-        desc = (r.get('description') or '').strip()
-        label = (r.get('gl_label') or '').lower()
-        if 'conting' in desc.lower():
-            buckets['Contingency'].append(r)
-        elif 'misc' in label or 'other' in label:
-            buckets['Misc/Other'].append(r)
-        elif desc:
-            buckets['Contract (vendor/note listed)'].append(r)
-        else:
-            buckets['No vendor/note on file'].append(r)
+        buckets[classify_expense_line(r)].append(r)
 
     total_all = sum(r['total'] for r in rows)
     findings = []
@@ -537,6 +546,100 @@ def check_expense_categorization(expense_line_rows, source_label='Expense Detail
             'Status': 'Open', 'Source Check': 'Budget categorization (Contingency/Contract/Misc)',
         })
     return findings
+
+
+def compare_expense_detail_yoy(current_rows, prior_rows, cost_center_filter=None):
+    """
+    Year-over-year comparison of two Expense Detail exports (bucket 4) for
+    the SAME property - e.g. this year's budget vs last year's - to answer
+    three things: what changed GL by GL, whether Contingency/Contract/Misc/
+    No-vendor-note category totals shifted (reusing classify_expense_line -
+    same rule as check_expense_categorization, so the two never drift out
+    of sync), and which specific GL lines are driving the total change
+    (ranked by |$ delta|, with the current year's own line items attached
+    so the "why" - a new vendor, a bigger contract, a new contingency line -
+    is visible without a separate lookup).
+
+    current_rows / prior_rows: expense_parser.parse_expense_detail() line_rows
+    output for each year. cost_center_filter: optional - restrict both years
+    to one building via the row's own 'cost_center' tag (Riverside Labs is
+    multi-building - west20/West01 - in one Expense Detail export each year).
+
+    Returns {
+      'total_prior', 'total_current', 'total_delta', 'total_pct_change',
+      'category_comparison': [{'category', 'prior', 'current', 'delta', 'pct_change'}],
+      'gl_comparison': [{'gl', 'label', 'prior', 'current', 'delta', 'pct_change',
+                          'is_new', 'is_dropped', 'current_line_items'}],
+        sorted by |delta| descending - current_line_items are the actual
+        vendor/description rows behind this year's total for that GL.
+    }
+    """
+    def filt(rows):
+        if not cost_center_filter:
+            return rows
+        return [r for r in rows if (r.get('cost_center') or '').lower() == cost_center_filter.lower()]
+
+    cur_rows = filt(current_rows)
+    pri_rows = filt(prior_rows)
+
+    def sum_by_gl(rows):
+        out = {}
+        for r in rows:
+            gl = r.get('gl')
+            if not gl:
+                continue
+            entry = out.setdefault(gl, {'label': r.get('gl_label', ''), 'total': 0.0, 'rows': []})
+            entry['total'] += r['total']
+            entry['rows'].append(r)
+        return out
+
+    cur_by_gl = sum_by_gl(cur_rows)
+    pri_by_gl = sum_by_gl(pri_rows)
+
+    gl_comparison = []
+    for gl in set(cur_by_gl) | set(pri_by_gl):
+        cur = cur_by_gl.get(gl)
+        pri = pri_by_gl.get(gl)
+        cur_total = cur['total'] if cur else 0.0
+        pri_total = pri['total'] if pri else 0.0
+        delta = cur_total - pri_total
+        pct = (delta / pri_total * 100) if pri_total else (100.0 if cur_total else 0.0)
+        gl_comparison.append({
+            'gl': gl, 'label': (cur or pri)['label'],
+            'prior': pri_total, 'current': cur_total, 'delta': delta, 'pct_change': pct,
+            'is_new': pri is None, 'is_dropped': cur is None,
+            'current_line_items': cur['rows'] if cur else [],
+        })
+    gl_comparison.sort(key=lambda x: abs(x['delta']), reverse=True)
+
+    def category_totals(rows):
+        totals = {'Contingency': 0.0, 'Misc/Other': 0.0, 'Contract (vendor/note listed)': 0.0,
+                  'No vendor/note on file': 0.0}
+        for r in rows:
+            totals[classify_expense_line(r)] += r['total']
+        return totals
+
+    cur_cat = category_totals(cur_rows)
+    pri_cat = category_totals(pri_rows)
+    category_comparison = []
+    for cat in cur_cat:
+        delta = cur_cat[cat] - pri_cat[cat]
+        pct = (delta / pri_cat[cat] * 100) if pri_cat[cat] else (100.0 if cur_cat[cat] else 0.0)
+        category_comparison.append({
+            'category': cat, 'prior': pri_cat[cat], 'current': cur_cat[cat],
+            'delta': delta, 'pct_change': pct,
+        })
+
+    total_prior = sum(r['total'] for r in pri_rows)
+    total_current = sum(r['total'] for r in cur_rows)
+    total_delta = total_current - total_prior
+    total_pct = (total_delta / total_prior * 100) if total_prior else (100.0 if total_current else 0.0)
+
+    return {
+        'total_prior': total_prior, 'total_current': total_current,
+        'total_delta': total_delta, 'total_pct_change': total_pct,
+        'category_comparison': category_comparison, 'gl_comparison': gl_comparison,
+    }
 
 
 CHECKLIST = [
