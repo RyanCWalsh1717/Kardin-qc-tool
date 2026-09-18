@@ -1,3 +1,4 @@
+import os
 import re
 import traceback
 from datetime import date
@@ -75,15 +76,52 @@ def show_expense_categorization(building_key, cost_center_code=None):
         st.markdown(f"- {f['Comment']}")
 
 
+def _file_label(f):
+    """Display name for either a Streamlit UploadedFile or a committed-file
+    path string - both are valid inputs to load_or_upload_file's callers."""
+    return getattr(f, 'name', None) or os.path.basename(str(f))
+
+
+def _seek0(f):
+    """Rewind a file-like object before re-reading it a second time in the
+    same run - a no-op for a committed-file path string, which has no
+    seek() and doesn't need one."""
+    if hasattr(f, 'seek'):
+        f.seek(0)
+
+
+def load_or_upload_file(assumption_key, label, file_type, key_prefix):
+    """Returns a committed file (path string, from this property's
+    config.yaml assumption_files map) if one exists, else renders a
+    required uploader - or, when a committed file IS found, renders an
+    OPTIONAL override uploader instead (an upload always wins over the
+    committed file for that run, without needing to edit the config).
+    Returns None if nothing is available yet. Works transparently with
+    downstream code (openpyxl.load_workbook, parse_expense_detail, etc.)
+    since both a path string and an UploadedFile are valid inputs to those -
+    just use _seek0()/_file_label() instead of .seek()/.name directly."""
+    slug = st.session_state.get('property_slug')
+    cfg = st.session_state.get('property_cfg') or {}
+    filename = (cfg.get('assumption_files') or {}).get(assumption_key)
+    committed = config_loader.committed_file_path(slug, filename)
+    if committed:
+        st.caption(f"✓ Using committed {label}: `{os.path.basename(committed)}` (from this property's config)")
+        override = st.file_uploader(f"Override {label} (optional)", type=file_type,
+                                    key=f'{key_prefix}_{assumption_key}_override')
+        return override if override else committed
+    return st.file_uploader(label, type=file_type, key=f'{key_prefix}_{assumption_key}_upload')
+
+
 def show_assumptions_check(monthly_rows, key_prefix):
     """Optional cross-check: GRP's own GL-level monthly budget assumptions
     (a separate planning workbook GRP provides, not read from Kardin) vs
     Kardin's actual Monthly Budget Detail for this building. Nothing here
     is required for the rest of the tool - upload is entirely optional."""
     with st.expander("Cross-check against GRP Budget Assumptions (optional)"):
-        st.caption("Upload GRP's own planning workbook (e.g. '2027 GRP Budget Assumptions.xlsx') to check "
-                   "whether Kardin's Monthly Budget Detail actually reflects what GRP assumed, GL by GL.")
-        xlsx_file = st.file_uploader("GRP Budget Assumptions (.xlsx)", type="xlsx", key=f'{key_prefix}_assump_upload')
+        st.caption("Committed per-property in config.yaml if set up; otherwise upload GRP's own planning "
+                   "workbook (e.g. '2027 GRP Budget Assumptions.xlsx') to check whether Kardin's Monthly "
+                   "Budget Detail actually reflects what GRP assumed, GL by GL.")
+        xlsx_file = load_or_upload_file('grp_budget_assumptions', "GRP Budget Assumptions (.xlsx)", "xlsx", key_prefix)
         if not xlsx_file:
             return
         try:
@@ -101,10 +139,10 @@ def show_assumptions_check(monthly_rows, key_prefix):
                 "earlier reforecast tail that should NOT be compared against this Kardin file)",
                 min_value=2000, max_value=2100, value=date.today().year + 1, key=f'{key_prefix}_assump_year')
         try:
-            xlsx_file.seek(0)
+            _seek0(xlsx_file)
             assumption_rows = assumptions_parser.parse_grp_budget_assumptions(xlsx_file, sheet_name)
             findings = assumptions_parser.check_assumptions_vs_bucket1(
-                assumption_rows, monthly_rows, source_label=f"{xlsx_file.name} ({sheet_name})",
+                assumption_rows, monthly_rows, source_label=f"{_file_label(xlsx_file)} ({sheet_name})",
                 budget_year=int(budget_year))
         except Exception:
             report_error()
@@ -126,7 +164,7 @@ def show_interest_check(monthly_rows, key_prefix):
                    "interest schedule against Kardin's GL 801110 for this building. Purely informational - "
                    "the two can legitimately differ (refinancing, a different note structure, timing) and "
                    "this check can't tell which; it's for you to judge, not a rule violation.")
-        xlsx_file = st.file_uploader("Interest Calculations (.xlsx)", type="xlsx", key=f'{key_prefix}_interest_upload')
+        xlsx_file = load_or_upload_file('interest_calculations', "Interest Calculations (.xlsx)", "xlsx", key_prefix)
         if not xlsx_file:
             return
         try:
@@ -142,7 +180,7 @@ def show_interest_check(monthly_rows, key_prefix):
             budget_year = st.number_input("Budget year to compare", min_value=2000, max_value=2100,
                                           value=date.today().year + 1, key=f'{key_prefix}_interest_year')
         try:
-            xlsx_file.seek(0)
+            _seek0(xlsx_file)
             sections = assumptions_parser.parse_interest_calculations(xlsx_file, sheet_name)
         except Exception:
             report_error()
@@ -154,7 +192,7 @@ def show_interest_check(monthly_rows, key_prefix):
                               key=f'{key_prefix}_interest_section')
         section = next(s for s in sections if s['title'] == chosen)
         findings = assumptions_parser.check_interest_vs_bucket1(
-            section, monthly_rows, int(budget_year), source_label=f"{xlsx_file.name} ({sheet_name})")
+            section, monthly_rows, int(budget_year), source_label=f"{_file_label(xlsx_file)} ({sheet_name})")
         if not findings:
             st.info("No difference beyond tolerance found for this building/year.")
             return
@@ -175,7 +213,7 @@ def show_leasing_assumptions_check(occupancy_rows, key_prefix):
                    "to check whether Kardin's Occupancy Summary reflects the vacant/expiring suite assumptions "
                    "GRP gave the PM. The sheet is reused year over year with one stacked block per budget cycle - "
                    "only the block for the year you enter below is used.")
-        xlsx_file = st.file_uploader("Leasing Assumptions (.xlsx)", type="xlsx", key=f'{key_prefix}_lease_assump_upload')
+        xlsx_file = load_or_upload_file('leasing_assumptions', "Leasing Assumptions (.xlsx)", "xlsx", key_prefix)
         if not xlsx_file:
             return
         try:
@@ -199,11 +237,11 @@ def show_leasing_assumptions_check(occupancy_rows, key_prefix):
                        "this workbook (e.g. '20 Riverside') can't be mapped to a Kardin cost center, so nothing "
                        "will match. Select a Property above first.")
         try:
-            xlsx_file.seek(0)
+            _seek0(xlsx_file)
             assumption_rows = assumptions_parser.parse_leasing_assumptions(xlsx_file, sheet_name, int(budget_year))
             findings = assumptions_parser.check_leasing_assumptions_vs_bucket2(
                 assumption_rows, occupancy_rows, building_to_cc, int(budget_year),
-                source_label=f"{xlsx_file.name} ({sheet_name})")
+                source_label=f"{_file_label(xlsx_file)} ({sheet_name})")
         except Exception:
             report_error()
             return
@@ -228,7 +266,7 @@ def show_capex_plan_check(capex_line_rows, key_prefix):
                    "to check whether Kardin's Capex.pdf reflects the planned building-improvement capital "
                    "for the target year. Only GL 154500/171300 are compared - Leasing Commissions/Tenant "
                    "Improvements are a different capital category, already checked elsewhere in this bucket.")
-        xlsx_file = st.file_uploader("5-Year CapEx Plan (.xlsx)", type="xlsx", key=f'{key_prefix}_capex_plan_upload')
+        xlsx_file = load_or_upload_file('capex_plan', "5-Year CapEx Plan (.xlsx)", "xlsx", key_prefix)
         if not xlsx_file:
             return
         budget_year = st.number_input(
@@ -241,10 +279,10 @@ def show_capex_plan_check(capex_line_rows, key_prefix):
             st.warning("No property selected above (or it has no cost centers configured) - building names "
                        "in this workbook can't be mapped to a Kardin cost center. Select a Property above first.")
         try:
-            xlsx_file.seek(0)
+            _seek0(xlsx_file)
             plan_totals = assumptions_parser.parse_capex_plan_portfolio_summary(xlsx_file, int(budget_year))
             findings = assumptions_parser.check_capex_plan_vs_bucket5(
-                plan_totals, capex_line_rows, building_to_cc, int(budget_year), source_label=xlsx_file.name)
+                plan_totals, capex_line_rows, building_to_cc, int(budget_year), source_label=_file_label(xlsx_file))
         except Exception:
             report_error()
             return
@@ -267,7 +305,7 @@ def show_expense_yoy_comparison(current_line_rows, key_prefix):
     with st.expander("Compare to Prior Year Expense Detail (optional)"):
         st.caption("Upload last year's Expense Detail (.pdf) for this same property to see what changed, "
                    "whether Contingency stayed flat, and what's driving any increase.")
-        prior_pdf = st.file_uploader("Prior Year Expense Detail (.pdf)", type="pdf", key=f'{key_prefix}_yoy_upload')
+        prior_pdf = load_or_upload_file('prior_year_expense_detail', "Prior Year Expense Detail (.pdf)", "pdf", key_prefix)
         if not prior_pdf:
             return
         property_cfg = st.session_state.get('property_cfg')
@@ -407,7 +445,25 @@ def has_bucket_tag(fname_lower, n):
     return re.search(rf'(?<![a-z0-9])b0*{n}(?![a-z0-9])', fname_lower) is not None
 
 
-def classify_and_pick(files, slot_rules, key_prefix, bucket_number=None):
+def exclude_3way_reports(files):
+    """Bucket 6's 2-way ('2025B v 2025F') Detail/Monthly Detail files can
+    collide with Bucket 1's 3-way ('2025B v 2025F v 2026B') Detail files
+    when both carry the SAME B<n> building tag and match the same generic
+    'detail' keyword rule - confirmed against real Lex Labs data run through
+    the full shared file pool (the normal way this app is used): bucket 6's
+    classification silently picked bucket 1's own Detail/Monthly Detail
+    file instead of its own, for every one of 5 buildings, producing 0
+    findings instead of real ones (bucket 1's file structurally doesn't
+    match bucket 6's 2-way parser, so it just quietly extracts nothing).
+    A 3-way report's filename always has TWO ' v ' separators (year v year
+    v year); a 2-way report has only one - filter out anything with 2+
+    before bucket 6 (or anything else that's specifically 2-way) ever sees
+    it, so the B<n>-tag+keyword match can't cross-pick the wrong bucket's
+    file even though both are tagged for the same building."""
+    return [f for f in (files or []) if f.name.lower().count(' v ') < 2]
+
+
+def classify_and_pick(files, slot_rules, key_prefix, bucket_number=None, building_hint=None):
     """
     All files for every bucket are dropped into ONE global uploader; this
     guesses which uploaded file goes in which slot for THIS bucket, then
@@ -415,10 +471,15 @@ def classify_and_pick(files, slot_rules, key_prefix, bucket_number=None):
     listing every uploaded file) so a naming-convention mismatch never
     blocks you - worst case you just pick manually.
 
-    Matching is two-pass when bucket_number is given: first among files
-    carrying an explicit 'B{bucket_number}' tag, then (if nothing tagged
-    matches) across the full file list by keyword alone - so this works
-    whether or not a property's files use the B-number convention.
+    Matching is up to three-pass: first among files carrying an explicit
+    'B{bucket_number}' tag (when bucket_number is given); then, when
+    building_hint is given (the current Building name), among files whose
+    name contains it as a substring - properties with multiple buildings
+    but NO B<n> tags (e.g. Riverside Labs' "20 Riverside" vs "1 Riverside",
+    both sharing one untagged file pool) would otherwise resolve to
+    whichever building's file happens to sort first, regardless of which
+    one was actually asked for; then across the full file list by keyword
+    alone - so this still works when a property uses neither convention.
 
     files: list of UploadedFile (or None/empty) - the FULL shared pool.
     slot_rules: {slot_label: [(must_contain_all, must_not_contain_any), ...]}
@@ -433,6 +494,7 @@ def classify_and_pick(files, slot_rules, key_prefix, bucket_number=None):
     used = set()
 
     tagged = [f for f in files if bucket_number is not None and has_bucket_tag(f.name.lower(), bucket_number)]
+    hinted = [f for f in files if building_hint and building_hint.lower() in f.name.lower()]
 
     def matches_any_rule(fname_lower):
         for rule_groups in slot_rules.values():
@@ -457,7 +519,7 @@ def classify_and_pick(files, slot_rules, key_prefix, bucket_number=None):
 
     for slot, rule_groups in slot_rules.items():
         guess = None
-        for pool in (tagged, files):
+        for pool in (tagged, hinted, files):
             for f in pool:
                 if f.name in used:
                     continue
@@ -482,6 +544,54 @@ def classify_and_pick(files, slot_rules, key_prefix, bucket_number=None):
         else:
             assignment[slot] = None
     return assignment
+
+
+def silent_classify(files, slot_rules, bucket_number=None, building_hint=None):
+    """Non-UI twin of classify_and_pick's auto-guess - identical (up to)
+    three-pass (tagged, then building_hint substring, then full pool)
+    matching, but returns {slot: file or None} directly with no dropdowns
+    rendered. Used by 'Run Everything' to classify every bucket without
+    visiting each tab first - always takes the auto-guess with no manual-
+    override option (that's what the per-tab dropdowns remain for, if a
+    guess is ever wrong). building_hint matters most here specifically,
+    since Run Everything has no dropdown for a human to catch a wrong guess -
+    see classify_and_pick's docstring for why it's needed at all."""
+    files = files or []
+    assignment = {}
+    used = set()
+    tagged = [f for f in files if bucket_number is not None and has_bucket_tag(f.name.lower(), bucket_number)]
+    hinted = [f for f in files if building_hint and building_hint.lower() in f.name.lower()]
+    for slot, rule_groups_for_slot in slot_rules.items():
+        guess = None
+        for pool in (tagged, hinted, files):
+            for f in pool:
+                if f.name in used:
+                    continue
+                fname_lower = f.name.lower()
+                for must, must_not in rule_groups_for_slot:
+                    if (all(s.lower() in fname_lower for s in must)
+                            and not any(s.lower() in fname_lower for s in must_not)):
+                        guess = f
+                        break
+                if guess:
+                    break
+            if guess:
+                break
+        assignment[slot] = guess
+        if guess:
+            used.add(guess.name)
+    return assignment
+
+
+def silent_classify_multi(files, rule_groups):
+    """Non-UI twin of classify_multi's auto-guess - returns the matching
+    files directly, no multiselect rendered."""
+    def matches(fname_lower):
+        for must, must_not in rule_groups:
+            if all(s.lower() in fname_lower for s in must) and not any(s.lower() in fname_lower for s in must_not):
+                return True
+        return False
+    return [f for f in (files or []) if matches(f.name.lower())]
 
 
 def classify_multi(files, rule_groups, key, label):
@@ -622,9 +732,13 @@ _prop_choice = st.selectbox(
          "real cost-center name, and lets the parser flag a building's files if they're accidentally "
          "scoped to the wrong cost center. Not required - everything works with manual names too.",
 )
-st.session_state.property_cfg = (
-    config_loader.load_property_config(next(p['slug'] for p in _properties if p['name'] == _prop_choice))
+st.session_state.property_slug = (
+    next(p['slug'] for p in _properties if p['name'] == _prop_choice)
     if _prop_choice != _prop_options[0] else None
+)
+st.session_state.property_cfg = (
+    config_loader.load_property_config(st.session_state.property_slug)
+    if st.session_state.property_slug else None
 )
 
 with st.expander("Import / update cost centers from Kardin"):
@@ -691,6 +805,228 @@ if all_files:
         for f in all_files:
             st.write(f.name)
 
+
+def run_everything(all_files, building):
+    """Silently runs all 7 buckets in dependency order (1 before 4/5/6, 2
+    before 7) using the SAME auto-classification every tab already uses -
+    batch mode automatically for Bucket 1/6 when B<n> tags are detected,
+    single-run otherwise, defaulting to ALL_BUILDINGS when no Building name
+    is typed. Stores into st.session_state.bucket_results exactly like
+    clicking each tab's own Run Analysis button, so every existing display
+    (checklist, findings, categorization, etc.) works unchanged if the user
+    later opens a tab. The optional assumption-file cross-checks (GRP Budget
+    Assumptions, Leasing Assumptions, etc.) are NOT run here - those need an
+    uploaded/committed file picked per-tab and stay exactly as they are.
+    Returns [{'bucket', 'building', 'label', 'must_fix', 'for_discussion',
+    'error'}] - one row per bucket run (one per batch building for 1/6)."""
+    run_building = building if building else ALL_BUILDINGS
+    summary = []
+
+    def _tally(bucket_num, bname, label, findings):
+        must_fix = sum(1 for f in findings if f.get('Priority') == 'Must Fix')
+        summary.append({'bucket': bucket_num, 'building': bname, 'label': label,
+                        'must_fix': must_fix, 'for_discussion': len(findings) - must_fix, 'error': None})
+
+    property_cfg = st.session_state.get('property_cfg')
+
+    # --- Bucket 1 ---
+    b1_slot_rules = {
+        'Budget Analysis Summary': [(['summary'], [])],
+        'Budget Analysis Detail': [(['detail'], MONTHLY_TOKENS)],
+        'Monthly Budget Detail': [([t], []) for t in MONTHLY_TOKENS],
+    }
+    tags = extract_tags(all_files)
+    if len(tags) > 1:
+        for t in tags:
+            picked = classify_for_tag(all_files, b1_slot_rules, t)
+            cc = config_loader.cost_center_for_tag(property_cfg, t)
+            bname = cc['name'] if cc else f'B{t}'
+            try:
+                results = kardin_parser.run(
+                    picked['Budget Analysis Summary'], picked['Budget Analysis Detail'],
+                    picked['Monthly Budget Detail'], expected_cost_center=cc['code'] if cc else None)
+                st.session_state.bucket_results[(1, bname)] = {
+                    'results': results, 'detail_pdf': picked['Budget Analysis Detail']}
+                _tally(1, bname, '1. Bgt & Fcst Summaries', results['findings'])
+            except Exception:
+                summary.append({'bucket': 1, 'building': bname, 'label': '1. Bgt & Fcst Summaries',
+                                'must_fix': None, 'for_discussion': None, 'error': str(traceback.format_exc())})
+    else:
+        picked = silent_classify(all_files, b1_slot_rules, bucket_number=1, building_hint=building)
+        try:
+            results = kardin_parser.run(picked['Budget Analysis Summary'], picked['Budget Analysis Detail'],
+                                        picked['Monthly Budget Detail'])
+            st.session_state.bucket_results[(1, building)] = {
+                'results': results, 'detail_pdf': picked['Budget Analysis Detail']}
+            _tally(1, building, '1. Bgt & Fcst Summaries', results['findings'])
+        except Exception:
+            summary.append({'bucket': 1, 'building': building, 'label': '1. Bgt & Fcst Summaries',
+                            'must_fix': None, 'for_discussion': None, 'error': str(traceback.format_exc())})
+
+    # --- Bucket 2 ---
+    picked = silent_classify(all_files, {
+        'Free Rent': [(['free', 'rent'], [])],
+        'Occupancy Summary': [(['occupancy'], [])],
+        'Stacking Plan': [(['stacking'], [])],
+    }, bucket_number=2, building_hint=building)
+    rent_lab_pdfs = silent_classify_multi(all_files, [
+        (['rent-lab'], ['free']), (['rent-office'], ['free']), (['rent-misc'], ['free']), (['base rent'], ['free'])])
+    rent_roll_pdfs = silent_classify_multi(all_files, [(['rent roll'], [])])
+    try:
+        results = leasing_parser.run(picked['Free Rent'], rent_lab_pdfs, picked['Occupancy Summary'],
+                                     rent_roll_pdfs, picked['Stacking Plan'])
+        st.session_state.bucket_results[(2, run_building)] = {'results': results}
+        _tally(2, run_building, '2. Leasing & Rent', results['findings'])
+    except Exception:
+        summary.append({'bucket': 2, 'building': run_building, 'label': '2. Leasing & Rent',
+                        'must_fix': None, 'for_discussion': None, 'error': str(traceback.format_exc())})
+
+    # --- Bucket 3 ---
+    picked = silent_classify(all_files, {
+        'Recovery Calc Est': [(['calc est'], [])],
+        'Recovery Monthly': [(['recovery', t], []) for t in MONTHLY_TOKENS],
+        'Gross Up Schedule': [(['gross up'], [])],
+    }, bucket_number=3, building_hint=building)
+    xlsx_files = [f for f in (all_files or []) if f.name.lower().endswith('.xlsx')]
+    picked_xlsx = silent_classify(xlsx_files, {'Fixed Factor Calcs (.xlsx)': [([], [])]}, bucket_number=3,
+                                  building_hint=building)
+    try:
+        results = recoveries_parser.run(picked['Recovery Calc Est'], picked['Recovery Monthly'],
+                                        picked['Gross Up Schedule'], picked_xlsx['Fixed Factor Calcs (.xlsx)'])
+        st.session_state.bucket_results[(3, run_building)] = {'results': results}
+        _tally(3, run_building, '3. Recoveries', results['findings'])
+    except Exception:
+        summary.append({'bucket': 3, 'building': run_building, 'label': '3. Recoveries',
+                        'must_fix': None, 'for_discussion': None, 'error': str(traceback.format_exc())})
+
+    # --- Bucket 4 (cross-checks bucket 1) ---
+    picked = silent_classify(all_files, {
+        'Expense Detail': [(['expense detail'], [])],
+        'Mgmt Fee Calc - File 1': [(['mgmt fee'], [])],
+        'Mgmt Fee Calc - File 2 (optional)': [(['mgmt fee'], [])],
+    }, bucket_number=4, building_hint=building)
+    b1_entry = lookup_bucket(1, building)
+    try:
+        expense_detail_pdf = picked['Expense Detail']
+        mgmt_fee_a_pdf = picked['Mgmt Fee Calc - File 1']
+        mgmt_fee_b_pdf = picked['Mgmt Fee Calc - File 2 (optional)']
+        bucket1_rows = b1_entry['results']['detail_rows'] if b1_entry else None
+        results = expense_parser.run(
+            expense_detail_pdf, mgmt_fee_a_pdf, mgmt_fee_b_pdf, bucket1_west20_detail_rows=bucket1_rows,
+            mgmt_fee_20r_name=mgmt_fee_a_pdf.name if mgmt_fee_a_pdf else 'Mgmt Fee Calc #1',
+            mgmt_fee_1r_name=mgmt_fee_b_pdf.name if mgmt_fee_b_pdf else 'Mgmt Fee Calc #2',
+        )
+        st.session_state.bucket_results[(4, run_building)] = {
+            'results': results, 'expense_detail_name': expense_detail_pdf.name if expense_detail_pdf else 'Expense Detail'}
+        _tally(4, run_building, '4. Expense Back-up', results['findings'])
+    except Exception:
+        summary.append({'bucket': 4, 'building': run_building, 'label': '4. Expense Back-up',
+                        'must_fix': None, 'for_discussion': None, 'error': str(traceback.format_exc())})
+
+    # --- Bucket 5 (cross-checks bucket 1) ---
+    picked = silent_classify(all_files, {
+        'Capex': [(['capex'], [])],
+        'TIs': [(['tis'], []), (['tenant improvement'], [])],
+        'LCs': [(['lcs'], ['calc']), (['leasing commission'], [])],
+    }, bucket_number=5, building_hint=building)
+    try:
+        capex_line_rows, capex_totals_rows = expense_parser.parse_expense_detail(picked['Capex'])
+        bucket1_rows = b1_entry['results']['detail_rows'] if b1_entry else None
+        results = capex_parser.run(picked['TIs'], picked['LCs'], capex_line_rows=capex_line_rows,
+                                   capex_totals_rows=capex_totals_rows, bucket1_west20_detail_rows=bucket1_rows,
+                                   capex_pdf_missing=(picked['Capex'] is None))
+        st.session_state.bucket_results[(5, run_building)] = {'results': results, 'capex_line_rows': capex_line_rows}
+        _tally(5, run_building, '5. CapEx Back-up', results['findings'])
+    except Exception:
+        summary.append({'bucket': 5, 'building': run_building, 'label': '5. CapEx Back-up',
+                        'must_fix': None, 'for_discussion': None, 'error': str(traceback.format_exc())})
+
+    # --- Bucket 6 (cross-checks bucket 1) ---
+    b6_slot_rules = {
+        '2026B v 2026F Detail': [(['detail'], MONTHLY_TOKENS)],
+        '2026F Monthly Detail': [([t], []) for t in MONTHLY_TOKENS],
+    }
+    b6_files = exclude_3way_reports(all_files)
+    if len(tags) > 1:
+        for t in tags:
+            picked = classify_for_tag(b6_files, b6_slot_rules, t)
+            cc = config_loader.cost_center_for_tag(property_cfg, t)
+            bname = cc['name'] if cc else f'B{t}'
+            b1e = st.session_state.bucket_results.get((1, bname))
+            try:
+                results = forecast_parser.run(
+                    picked['2026B v 2026F Detail'], picked['2026F Monthly Detail'],
+                    bucket1_detail_rows=b1e['results']['detail_rows'] if b1e else None,
+                    bucket1_detail_pdf=b1e['detail_pdf'] if b1e else None)
+                st.session_state.bucket_results[(6, bname)] = {'results': results}
+                _tally(6, bname, '6. Forecast Back-up', results['findings'])
+            except Exception:
+                summary.append({'bucket': 6, 'building': bname, 'label': '6. Forecast Back-up',
+                                'must_fix': None, 'for_discussion': None, 'error': str(traceback.format_exc())})
+    else:
+        picked = silent_classify(b6_files, b6_slot_rules, bucket_number=6, building_hint=building)
+        try:
+            results = forecast_parser.run(
+                picked['2026B v 2026F Detail'], picked['2026F Monthly Detail'],
+                bucket1_detail_rows=b1_entry['results']['detail_rows'] if b1_entry else None,
+                bucket1_detail_pdf=b1_entry['detail_pdf'] if b1_entry else None)
+            st.session_state.bucket_results[(6, building)] = {'results': results}
+            _tally(6, building, '6. Forecast Back-up', results['findings'])
+        except Exception:
+            summary.append({'bucket': 6, 'building': building, 'label': '6. Forecast Back-up',
+                            'must_fix': None, 'for_discussion': None, 'error': str(traceback.format_exc())})
+
+    # --- Bucket 7 (cross-checks bucket 2) ---
+    picked = silent_classify(all_files, {
+        'Lease Expiration Schedule': [(['lease expiration'], []), (['lease', 'exp'], [])],
+    }, bucket_number=7, building_hint=building)
+    b2_entry = lookup_bucket(2, building)
+    try:
+        results = xtra_parser.run(picked['Lease Expiration Schedule'],
+                                  occupancy_rows=b2_entry['results']['occupancy_rows'] if b2_entry else None)
+        st.session_state.bucket_results[(7, run_building)] = {'results': results}
+        _tally(7, run_building, '7. Xtra rpts', results['findings'])
+    except Exception:
+        summary.append({'bucket': 7, 'building': run_building, 'label': '7. Xtra rpts',
+                        'must_fix': None, 'for_discussion': None, 'error': str(traceback.format_exc())})
+
+    return summary
+
+
+with st.expander("⚡ Run Everything", expanded=bool(all_files)):
+    st.caption("Runs all 7 buckets at once using auto-classification only (no manual dropdown overrides) - "
+               "Bucket 1/6 batch automatically across every detected building, the rest use the Building name "
+               "above (or run portfolio-wide if it's blank). Results land in st.session_state exactly like "
+               "clicking each tab's own Run Analysis, so every tab's display still works normally afterward. "
+               "The optional assumption-file cross-checks (GRP Budget Assumptions, etc.) aren't included here - "
+               "open the relevant tab for those.")
+    if st.button("Run all 7 buckets now", type="primary", key="run_everything_btn", disabled=not all_files):
+        with st.spinner("Running all 7 buckets..."):
+            st.session_state.run_everything_summary = run_everything(all_files, building)
+
+    _summary = st.session_state.get('run_everything_summary')
+    if _summary:
+        total_must_fix = sum(r['must_fix'] or 0 for r in _summary)
+        total_discuss = sum(r['for_discussion'] or 0 for r in _summary)
+        total_errors = sum(1 for r in _summary if r['error'])
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Must Fix (all buckets)", total_must_fix)
+        col2.metric("For Discussion (all buckets)", total_discuss)
+        col3.metric("Buckets that failed to parse", total_errors)
+        summary_df = pd.DataFrame([{
+            'Bucket': r['label'], 'Building': r['building'],
+            'Must Fix': r['must_fix'] if r['error'] is None else '—',
+            'For Discussion': r['for_discussion'] if r['error'] is None else '—',
+            'Status': 'ERROR - see traceback below' if r['error'] else 'OK',
+        } for r in _summary])
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        for r in _summary:
+            if r['error']:
+                with st.expander(f"⚠️ {r['label']} ({r['building']}) failed - traceback"):
+                    st.code(r['error'])
+        st.caption("Open any tab below to see that bucket's full findings, checklist, and optional "
+                   "cross-checks - this summary is just the headline count.")
+
 tabs = st.tabs([
     "1. Bgt & Fcst Summaries", "2. Leasing & Rent", "3. Recoveries", "4. Expense Back-up",
     "5. CapEx Back-up", "6. Forecast Back-up", "7. Xtra rpts", "Merge to Tracker",
@@ -703,7 +1039,7 @@ with tabs[0]:
         'Budget Analysis Summary': [(['summary'], [])],
         'Budget Analysis Detail': [(['detail'], MONTHLY_TOKENS)],
         'Monthly Budget Detail': [([t], []) for t in MONTHLY_TOKENS],
-    }, 'b1', bucket_number=1)
+    }, 'b1', bucket_number=1, building_hint=building)
     summary_pdf = picked['Budget Analysis Summary']
     detail_pdf = picked['Budget Analysis Detail']
     monthly_pdf = picked['Monthly Budget Detail']
@@ -753,7 +1089,7 @@ with tabs[1]:
         'Free Rent': [(['free', 'rent'], [])],
         'Occupancy Summary': [(['occupancy'], [])],
         'Stacking Plan': [(['stacking'], [])],
-    }, 'b2', bucket_number=2)
+    }, 'b2', bucket_number=2, building_hint=building)
     free_rent_pdf = picked['Free Rent']
     occupancy_pdf = picked['Occupancy Summary']
     stacking_pdf = picked['Stacking Plan']
@@ -797,13 +1133,14 @@ with tabs[2]:
         'Recovery Calc Est': [(['calc est'], [])],
         'Recovery Monthly': [(['recovery', t], []) for t in MONTHLY_TOKENS],
         'Gross Up Schedule': [(['gross up'], [])],
-    }, 'b3', bucket_number=3)
+    }, 'b3', bucket_number=3, building_hint=building)
     calc_est_pdf = picked['Recovery Calc Est']
     recovery_monthly_pdf = picked['Recovery Monthly']
     gross_up_pdf = picked['Gross Up Schedule']
 
     xlsx_files = [f for f in (all_files or []) if f.name.lower().endswith('.xlsx')]
-    picked_xlsx = classify_and_pick(xlsx_files, {'Fixed Factor Calcs (.xlsx)': [([], [])]}, 'b3x', bucket_number=3)
+    picked_xlsx = classify_and_pick(xlsx_files, {'Fixed Factor Calcs (.xlsx)': [([], [])]}, 'b3x', bucket_number=3,
+                                    building_hint=building)
     fixed_factor_xlsx = picked_xlsx['Fixed Factor Calcs (.xlsx)']
 
     eff_building, building_ok = building_selector('b3', building)
@@ -833,7 +1170,7 @@ with tabs[3]:
         'Expense Detail': [(['expense detail'], [])],
         'Mgmt Fee Calc - File 1': [(['mgmt fee'], [])],
         'Mgmt Fee Calc - File 2 (optional)': [(['mgmt fee'], [])],
-    }, 'b4', bucket_number=4)
+    }, 'b4', bucket_number=4, building_hint=building)
     expense_detail_pdf = picked['Expense Detail']
     mgmt_fee_a_pdf = picked['Mgmt Fee Calc - File 1']
     mgmt_fee_b_pdf = picked['Mgmt Fee Calc - File 2 (optional)']
@@ -881,8 +1218,8 @@ with tabs[4]:
     picked = classify_and_pick(all_files, {
         'Capex': [(['capex'], [])],
         'TIs': [(['tis'], []), (['tenant improvement'], [])],
-        'LCs': [(['lcs'], []), (['leasing commission'], [])],
-    }, 'b5', bucket_number=5)
+        'LCs': [(['lcs'], ['calc']), (['leasing commission'], [])],
+    }, 'b5', bucket_number=5, building_hint=building)
     capex_pdf = picked['Capex']
     tis_pdf = picked['TIs']
     lcs_pdf = picked['LCs']
@@ -922,10 +1259,10 @@ with tabs[4]:
 # -------------------------------------------------------------------- 6. Forecast Back-up
 with tabs[5]:
     st.caption("2026B v 2026F Detail / 2026F Monthly Detail. Cross-checks against bucket 1's Detail when available.")
-    picked = classify_and_pick(all_files, {
+    picked = classify_and_pick(exclude_3way_reports(all_files), {
         '2026B v 2026F Detail': [(['detail'], MONTHLY_TOKENS)],
         '2026F Monthly Detail': [([t], []) for t in MONTHLY_TOKENS],
-    }, 'b6', bucket_number=6)
+    }, 'b6', bucket_number=6, building_hint=building)
     fc_detail_pdf = picked['2026B v 2026F Detail']
     fc_monthly_pdf = picked['2026F Monthly Detail']
 
@@ -970,14 +1307,14 @@ with tabs[5]:
 
     st.caption("Batch mode below looks up each building's bucket-1 results (by the same name typed there) "
                "for the reforecast drift check - run bucket 1's batch first if you want that check included.")
-    batch_runner(all_files, b6_slot_rules, 'b6', 6, run_fn=_b6_run)
+    batch_runner(exclude_3way_reports(all_files), b6_slot_rules, 'b6', 6, run_fn=_b6_run)
 
 # --------------------------------------------------------------------------- 7. Xtra rpts
 with tabs[6]:
     st.caption("Lease Expiration Schedule. Cross-checks against bucket 2's Occupancy Summary when available.")
     picked = classify_and_pick(all_files, {
         'Lease Expiration Schedule': [(['lease expiration'], []), (['lease', 'exp'], [])],
-    }, 'b7', bucket_number=7)
+    }, 'b7', bucket_number=7, building_hint=building)
     lease_exp_pdf = picked['Lease Expiration Schedule']
 
     b2_entry = lookup_bucket(2, building)

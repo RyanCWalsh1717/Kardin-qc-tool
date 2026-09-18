@@ -41,3 +41,22 @@ cost_centers:
   # - tag: '2'
   #   code: 'CHANGE_ME'
   #   name: 'CHANGE_ME'
+
+
+# ── COMMITTED ASSUMPTION FILES (optional) ───────────────────────────────────
+# GRP's own planning workbooks (not Kardin exports) - committed here once per
+# budget cycle so they auto-load instead of being re-uploaded every session.
+# Each value is a filename that must actually exist in this same folder
+# (data/[slug]/) - omit any you don't have, or omit the whole section.
+# A manual upload in the app always overrides the committed file for that run.
+#
+# CAUTION: this repo is public (Streamlit Community Cloud's free tier
+# requires it) - only commit files here that are OK to be public. Confirm
+# with whoever owns this deployment before adding real financial workbooks.
+
+# assumption_files:
+#   grp_budget_assumptions: 'grp_budget_assumptions.xlsx'       # Bucket 1 check
+#   leasing_assumptions: 'leasing_assumptions.xlsx'             # Bucket 2 check
+#   capex_plan: 'capex_plan.xlsx'                               # Bucket 5 check
+#   interest_calculations: 'interest_calculations.xlsx'         # Bucket 1 check (informational)
+#   prior_year_expense_detail: 'prior_year_expense_detail.pdf'  # Bucket 4 year-over-year

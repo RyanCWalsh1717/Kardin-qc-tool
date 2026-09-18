@@ -66,6 +66,20 @@ def cost_center_for_name(cfg, name):
     return None
 
 
+def committed_file_path(slug, filename):
+    """Absolute path to a committed file under data/{slug}/, or None if it
+    isn't there. Lets a property's assumption workbooks (GRP Budget
+    Assumptions, Leasing Assumptions, 5-Year CapEx Plan, Interest
+    Calculations, prior-year Expense Detail) be committed once per budget
+    cycle - see config.yaml's optional `assumption_files` map - instead of
+    re-uploaded by hand every session. filename is read from that map, e.g.
+    cfg.get('assumption_files', {}).get('grp_budget_assumptions')."""
+    if not slug or not filename:
+        return None
+    path = os.path.join(DATA_DIR, slug, filename)
+    return path if os.path.isfile(path) else None
+
+
 def generate_config_yaml(property_name, cost_centers):
     """cost_centers: [{'tag': str-or-None, 'code': str, 'name': str}, ...] -
     typically built from kardin_parser.parse_cost_center_roster (Kardin's own
